@@ -1,0 +1,31 @@
+BookaWaka E2E Test — Driver App Bug Report (2026-05-06)
+These bugs were found during a solo end-to-end test run. Please fix and confirm when done.
+
+CRITICAL
+BUG 1 — Offer while on active job cancels the current job When the driver is on an active job and a new job offer arrives on screen, interacting with the offer (accept OR reject) cancels the current active job. The driver then receives "Job cancelled by dispatcher" — this message is false, the app triggered it, not the dispatcher. Fix: incoming offer UI must be fully isolated from current job state. Accept/reject of an offer must never touch the active job.
+
+HIGH
+BUG 2 — Map does not move or show direction during a trip The map is static while driving. GPS position does not update or animate. Driver has no navigation reference during a trip. Fix: implement real-time GPS map updates during active trip.
+
+BUG 3 — App disconnects when backgrounded If the driver switches to another app or locks the phone, the driver app disconnects entirely. GPS stops, job offers stop arriving, the active trip stops running. Everything only resumes when the driver brings the app back to the foreground. Fix: implement a foreground service (Android) to keep GPS, Firebase listeners, and job state alive when the app is not in focus.
+
+BUG 4 — Wrong job ID on hail trips Hail trips are getting IDs like hail-1778047760181 (device-generated timestamp). The platform contract requires all job IDs to come from POST /api/job/create on the SA portal server. Device-generated IDs cause collisions and break SA reporting. SA portal endpoint: POST https://<sa-portal-url>/api/job/create Fix: call /api/job/create before starting a hail trip meter. Retry up to 3 times on failure. No local fallback.
+
+BUG 5 — TM subsidy not written to completed trip Completed TM hail trips have tmSubsidy: 0 and tmSubsidyFare: 0 in Firebase even when a voucher is entered. The subsidy calculation is not being written to the completed job record. Firebase path: completedJobs/{cid}/{bookingId} Required fields: tmSubsidy, tmSubsidyFare, tmPassengerPays, tmVoucherNo, tmPassengerName, tmTripCategory
+
+BUG 6 — Wrong tariff written on cash hail trips Cash hail trips are recording tariffName: "Total Mobility" and tariffId: "5" in Firebase even when no TM voucher is used. The tariff selection is carrying over from a previous TM trip. Fix: reset tariff selection to the default taxi tariff when starting a new hail trip.
+
+BUG 7 — False "Job cancelled by dispatcher" message Related to BUG 1. When the app self-cancels a job, it shows "cancelled by dispatcher." Fix: only show "cancelled by dispatcher" if CancelledBy === 'dispatcher' is present in the Firebase job record. Show a different message (or no message) for any other cancellation source.
+
+MEDIUM
+BUG 8 — No sign-out button Drivers cannot sign out from within the app. The only workaround is Android Settings → Apps → Clear Data. Fix: add a sign-out button in the app's settings or profile screen. Call firebase.auth().signOut() and return to the login screen.
+
+BUG 9 — Manual job type selection on hail When starting a hail trip, the driver is asked to select a job type (taxi / food / freight). Hail trips are always taxi. Food orders always come through the dispatch offer system — a driver cannot receive food as a hail. Freight is also never hail. Fix: auto-set type to "taxi" for hail jobs and remove the type-selection step from the hail flow.
+
+BUG 10 — Vehicle field name mismatch with Owner Portal The driver app reads assignedVehicles (array, e.g. ["Taxi02"]) and vehicleId (uppercase string, e.g. "TAXI02"). The Owner Portal writes allocatedVehicles (object, e.g. {"Taxi02": true}) — different field name and format. Result: drivers created via Owner Portal show "No vehicles available" in the driver app. Fix (coordinate with Owner Portal dev): either the Owner Portal writes assignedVehicles: [vehicleId] + vehicleId: vehicleId.toUpperCase(), OR the driver app falls back to reading allocatedVehicles as well.
+
+Driver app — Firebase field contract reminders
+Cancelled trips: write status: 'Cancelled', Status: 'Cancelled', CancelledAt (ISO), CancelledBy: 'driver' to allbookings/{cid}/{bookingId}
+GPS path: write to online/{cid}/{vid}/current — {lat, lng, hasGps: true, time}
+Ratings: write to driverRatings/{cid}/{bookingId} and patch allbookings/{cid}/{bookingId}/driverRating
+All job IDs: must come from POST /api/job/create — no local generation

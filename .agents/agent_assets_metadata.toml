@@ -1,0 +1,19 @@
+uploads = []
+
+[[generated]]
+id = "HMTNwnPUYNUcIjuewxE0k"
+uri = "file://artifacts/passenger-app/assets/images/icon.png"
+type = "image"
+title = "passenger app icon"
+
+[[generated]]
+id = "3vhDSfPYKAuueADeSzW_0"
+uri = "file://artifacts/passenger-app/assets/images/hero-map.png"
+type = "image"
+title = "hero map background"
+
+[[outputs]]
+id = "HXziCP9a5y-NSYZluTVfm"
+uri = "file://firebase-rtdb-rules.json"
+type = "unspecified"
+title = "Firebase RTDB Rules"

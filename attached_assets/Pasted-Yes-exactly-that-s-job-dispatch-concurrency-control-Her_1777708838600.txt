@@ -1,0 +1,31 @@
+Yes, exactly — that's job dispatch concurrency control. Here's how it should work properly:
+
+The core rule: one job, one offer, one driver at a time
+
+When a job enters the system it gets a status of Waiting. The dispatcher only offers it to one driver at a time — never broadcasts to all drivers simultaneously.
+
+The offer lifecycle (per job):
+
+Job arrives → status: Waiting (unassigned, in queue)
+Dispatcher picks the nearest/next free driver → writes the job to that driver's offer slot
+Status changes to Offered with offeredTo: driverID locked in
+Driver has a short window (e.g. 30 seconds) to accept or ignore
+If accepted → job status locked to Accepted with that driver's ID — atomically, so no race condition
+If ignored/expired → offer clears, dispatcher moves to the next available driver
+How 10 jobs + 2 drivers plays out:
+
+Driver A gets Job 1 offered → accepts → Driver A is now busy
+Driver B gets Job 2 offered → accepts → Driver B is now busy
+Jobs 3–10 sit in the queue with status Waiting
+When Driver A finishes Job 1 → Job 3 gets offered to Driver A
+When Driver B finishes Job 2 → Job 4 gets offered to Driver B
+And so on — first in, first served
+Two drivers can't take the same job because:
+
+The acceptance write uses a Firebase transaction (atomic compare-and-swap). The driver's app writes accepted only if the job's offeredTo field still matches their own driver ID. If Driver A already grabbed it, Driver B's transaction fails — the job is already locked. Firebase RTDB transactions are built exactly for this.
+
+Passenger side across all booking sources (app / web / phone):
+
+All sources write to the same pendingjobs/620611/ queue. The dispatcher doesn't care where the job came from — phone booking, web, passenger app — they're all just entries in the same queue with a timestamp. First in, first out. The dispatcher works the queue, not the source.
+
+When you're ready to build this I'll implement: the queue with timestamps, the single-offer-per-driver logic, the atomic acceptance transaction, and the passenger queue-position/wait-time display.

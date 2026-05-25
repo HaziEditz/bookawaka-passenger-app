@@ -1,0 +1,32 @@
+Audit response to send back:
+
+Audit complete. Here's the full result across all 7 items:
+
+✅ CONFIRMED CORRECT — no changes needed:
+
+Item	Result
+GPS update frequency	watchPositionAsync fires every 2s. Firebase presence (online/{cid}/{vid}/current) rate-limited to 1 write per 10s with lat, lng, hasGps: true, time (ISO).
+TM trip flagged in meter	Dispatched TM: extras.tmVoucherNo triggers full trips/{cid}/{bookingId} write in completeJob. Hail TM: completeHailTrip checks paymentType === 'total_mobility' — full TM record written to trips/. MeterPanel shows "TOTAL_MOBILITY" in running info row.
+Trip completion fields by payment type	All payment types covered in both completeJob and completeHailTrip. Cash ✅ · Card ✅ · TM ✅ · Account/ACC ✅
+ACC payment recorded	Hail: all ACC fields in completedJobs. Dispatch: tripsUsed PO counter incremented via transaction.
+✅ FIXED — shipped now:
+
+Cancellation path:
+cancelTrip() now writes status: 'Cancelled', Status: 'Cancelled', CancelledAt: ISO, CancelledBy: 'driver' to allbookings/{cid}/{bookingId}. Cancelled trips will no longer appear in revenue reports as open bookings. (Note: recallJob correctly writes Status: 'Unassigned' to re-queue the booking — no change needed there.)
+
+Freight POD:
+freightOrders/{cid}/{bookingId} now receives two confirmation writes from the driver:
+
+pickupConfirmed: true + pickupConfirmedAt: ISO — tapped in Phase 2 (Arrived) via "Confirm Freight Picked Up" button
+deliveryConfirmed: true + deliveredAt: ISO — written automatically when driver taps "Complete Drop-off"
+Both confirmations also record driverId and vehicleId. Non-blocking/best-effort so they never gate the job flow. Both appear in the map view and detail view.
+
+Rating:
+Post-trip 1–5 star rating modal appears after:
+
+Food/freight delivery completion (dispatched jobs, both map and detail views)
+Hail trip completion (after the end-trip confirmation in the meter)
+Rating is optional — skip button dismisses without writing. When submitted, written to:
+
+driverRatings/{cid}/{bookingId} — universal path, both portals read this
+allbookings/{cid}/{bookingId}/driverRating — also patched for dispatched trips for direct booking record access

@@ -1,0 +1,39 @@
+Subject: Owner Panel → Passengers tab — please verify these items
+
+Driver app is now writing richer rating data per-passenger. Before we light up new features, can you check the following on your side and let me know what's already there vs missing?
+
+1. Phone normalisation
+
+Are passenger keys stored as digits-only (no +, spaces, hyphens, brackets)?
+Does passenger lookup also normalise the search input the same way?
+If not — there will be silent misses where a passenger exists but isn't found.
+2. Existing Passenger tab — what does it currently show?
+Quick checklist, just confirm yes/no:
+
+ List of passengers (by phone)
+ Per-passenger trip history (bookings, fares, drivers, payment methods)
+ Total trips / total spend / last trip date
+ Account / business account linkage if applicable
+ Wallet / gift card credit balance
+ Any existing rating display
+3. New Firebase data to consume (from driver app)
+
+Path: passengerRatings/{companyId}/{phoneDigitsOnly}/{bookingId}
+Fields: rating (1–5), reasons[] (no_show, rude, damage, dispute, unsafe, other), comment (optional driver note), source (hail / dispatch), timestamps
+Ask: please add to the Passenger profile — average stars, total rated trips, list of low-rated incidents with reason badges + driver comment.
+4. Watch-list / repeat-offender flag (optional but valuable)
+
+If a passenger has ≥2 ratings of ≤2 stars in the last 90 days, surface a warning badge on their profile.
+Bonus: have dispatch flag their next booking with a yellow border so dispatchers see the history at a glance.
+5. Backward compatibility check
+
+Existing driverRatings/{cid}/{bookingId} and allbookings/{cid}/{bookingId}.driverRating* are unchanged in shape — just augmented with optional reasons[] and comment. Confirm nothing in your current code breaks if those new fields are present.
+6. Firebase security rule
+
+Confirm Owner Panel reads passengerRatings/ via authenticated user (not the DB secret). I'll add the explicit security rule on the SA portal side once you confirm what auth context you're using.
+7. Cross-check with SA portal
+
+The SA super-admin doesn't yet have a Passengers page either. If/when we build it, we'll mirror your data shape so we're consistent. Let me know if you'd prefer to define the schema first.
+Reply with what's already in place + any gaps, and we'll line up the work.
+
+That covers all the bases — phone normalisation (the most common silent bug), existing state, the new data, the optional watch-list feature, backward compatibility, security rules, and SA-portal consistency. Just paste and send.

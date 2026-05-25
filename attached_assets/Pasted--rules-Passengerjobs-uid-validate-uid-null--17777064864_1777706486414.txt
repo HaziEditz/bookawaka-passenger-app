@@ -1,0 +1,118 @@
+{
+  "rules": {
+    "Passengerjobs": {
+      "$uid": {
+        ".validate": "$uid!='null'",
+        ".read": "auth != null",
+        ".write": "auth != null"
+      }
+    },
+    "chat": {
+      "$driverid": {
+        ".read": true,
+        ".write": true
+      }
+    },
+    "notification": {
+      "$driverid": {
+        ".validate": "$driverid!='null'",
+        ".read": "auth != null",
+        ".write": "auth != null"
+      }
+    },
+    "online": {
+      ".read": "auth != null",
+      ".write": "auth != null",
+      "$companyid": {
+        "$vehicleid": {
+          "$uid": {
+            ".write": "$uid === auth.uid"
+          }
+        }
+      }
+    },
+    "jobs": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+    "links": {
+      ".read": "auth != null",
+      ".write": false
+    },
+    "tariffZones": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+    "tariffs": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+    "zones": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+    "drivers": {
+      ".read": "auth != null",
+      ".write": "auth != null",
+      ".indexOn": ["companyId"]
+    },
+    "vehicles": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+    "pendingjobs": {
+      "$companyId": {
+        "$bookingId": {
+          ".read": "auth != null",
+          ".write": "auth != null"
+        }
+      }
+    },
+    "allbookings": {
+      "$companyId": {
+        "$bookingId": {
+          ".read": "auth != null",
+          ".write": "auth != null"
+        }
+      }
+    },
+    "completedJobs": {
+      "$companyId": {
+        "$bookingId": {
+          ".read": "auth != null",
+          ".write": "auth != null"
+        }
+      }
+    },
+    "suspended": {
+      "$companyId": {
+        "$vehicleId": {
+          ".read": "auth != null",
+          ".write": "auth != null"
+        }
+      }
+    },
+    "driverMsg": {
+      "$companyId": {
+        ".read": "auth != null",
+        ".write": "auth != null"
+      }
+    },
+    "notifications": {
+      "$companyId": {
+        ".read": "auth != null",
+        ".write": "auth != null"
+      }
+    },
+    "companyProfiles": {
+      ".read": "auth != null",
+      ".write": false
+    },
+    "users": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": "auth != null && auth.uid === $uid"
+      }
+    }
+  }
+}

@@ -1,0 +1,33 @@
+You're right to call that out. Here's the proper flow as I understand it:
+
+Before writing any job — check who's online
+
+The RTDB online/620611/ node already has live driver presence. Before accepting the booking, the app checks:
+
+Nobody online at all → don't even write a job. Tell the passenger immediately: "Invercargill Taxis is offline right now — no drivers available." Done. No waiting.
+If there ARE drivers online, write the job, then branch:
+
+Driver is free (no current trip)
+→ Dispatcher offers the job directly to them
+→ Driver's app flashes the offer
+→ Driver accepts within ~30 seconds
+→ Passenger sees driver name, vehicle, ETA straight away
+
+Driver is online but busy (currently on a trip)
+→ Job sits in the dispatcher as unassigned / queued
+→ Passenger sees: "You're in the queue — the driver is finishing a current trip. Estimated wait: ~X mins"
+→ When driver completes that trip, the offer flashes on their screen
+→ Driver accepts → passenger gets notified and ride proceeds
+
+Driver doesn't accept in time (offer expires)
+→ Dispatcher re-queues or tries again
+→ If nobody accepts after exhausting all options → "Unable to find a driver right now, please try again"
+
+The 2-minute silent cancel is wrong because:
+
+It doesn't tell the passenger why (busy vs offline vs no response)
+A queued job that was never accepted shouldn't vanish after 2 minutes — it should stay live until the driver is free
+The passenger should see real queue status, not just "searching..." forever
+That's the correct flow. When you're ready to build it, say the word and I'll implement the online check, the queue status screen, and the proper timeout logic based on real driver state from Firebase.
+
+make sure when one or few driver free and get 10 passanger boking once or web booking and dispatch phone booking should not just offer all to on driver at once .its will kills evry thing .just be proepr way to hanlde that.2 driver cant have same job accpeted etc .you know what i mean .?

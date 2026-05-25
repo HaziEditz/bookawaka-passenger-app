@@ -1,0 +1,87 @@
+{
+  "expo": {
+    "name": "BookaWaka Passenger",
+    "slug": "bookawaka",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "passenger-app",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/images/icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#1e40af"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "nz.co.bookawaka.passenger"
+    },
+    "android": {
+      "package": "nz.co.bookawaka.passenger",
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyBhcA7J8ZefAwlzhuYUNDIf_W3Yzy_16gA"
+        }
+      }
+    },
+    "web": {
+      "favicon": "./assets/images/icon.png"
+    },
+    "plugins": [
+      [
+        "expo-router",
+        {
+          "origin": "https://replit.com/"
+        }
+      ],
+      "expo-font",
+      "expo-web-browser",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow BookaWaka to access your photos for card scanning.",
+          "cameraPermission": "Allow BookaWaka to use the camera for card scanning."
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow BookaWaka to use the camera."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Allow BookaWaka to use your location to set your pickup point.",
+          "locationAlwaysAndWhenInUsePermission": "Allow BookaWaka to use your location."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/icon.png",
+          "color": "#1e40af",
+          "androidMode": "default"
+        }
+      ],
+      "expo-updates"
+    ],
+    "updates": {
+      "url": "https://u.expo.dev/1e0865fe-ed65-4210-8c13-c08a49752f54"
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    },
+    "extra": {
+      "eas": {
+        "projectId": "1e0865fe-ed65-4210-8c13-c08a49752f54"
+      }
+    },
+    "owner": "lovesaf"
+  }
+}
