@@ -122,11 +122,21 @@ router.post("/create", async (req: Request, res: Response) => {
   }
 
   try {
-    // Primary dispatcher inbox — this must succeed before we return success
-    await rtdbWrite(`pendingjobs/${companyId}/${jobId}`, rtdbData, idToken);
+    const st = String(rtdbData.Status ?? rtdbData.status ?? "").toLowerCase();
+    const isCardHold =
+      st === "pendingpayment" ||
+      st === "paymentpending" ||
+      String(rtdbData.paymentMethod ?? rtdbData.PaymentMethod ?? "").toLowerCase() === "card" &&
+        String(rtdbData.paymentStatus ?? "").toLowerCase() !== "paid";
 
-    // Mirror writes — fire and forget (server handles them after responding to the app)
     const now = new Date().toISOString();
+    // Card hold: write allbookings + Passengerjobs only — NEVER pendingjobs until Stripe confirms.
+    if (!isCardHold) {
+      await rtdbWrite(`pendingjobs/${companyId}/${jobId}`, rtdbData, idToken);
+    } else {
+      req.log.info({ companyId, jobId, st }, "card hold — withheld pendingjobs until payment verified");
+    }
+
     rtdbWrite(`allbookings/${companyId}/${jobId}`, rtdbData, idToken)
       .catch((e) => req.log.warn({ err: (e as Error).message }, "RTDB allbookings mirror failed"));
     rtdbWrite(`Passengerjobs/${passengerUid}/${jobId}`, rtdbData, idToken)

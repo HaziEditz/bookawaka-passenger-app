@@ -31,7 +31,7 @@ import { calculateFare, formatCurrency } from "@/lib/fareCalculator";
 import { PlaceDetail, reverseGeocode } from "@/lib/googlePlaces";
 import { useTMSettings, calcTMSubsidy } from "@/lib/tmSettings";
 import { useColors } from "@/hooks/useColors";
-import { openStripeCheckout } from "@/lib/stripePayment";
+import { openStripeCheckout, verifyAndDispatchBooking } from "@/lib/stripePayment";
 import { useAppConfig } from "@/context/AppConfigContext";
 import {
   FALLBACK_TZ,
@@ -72,7 +72,7 @@ export default function BookingScreen() {
   const [booking, setBooking] = useState(false);
   const [bookingStatus, setBookingStatus] = useState<string | null>(null);
   const [stripeError, setStripeError] = useState<string | null>(null);
-  const [useWalletCredit, setUseWalletCredit] = useState(true);
+  const [useWalletCredit, setUseWalletCredit] = useState(false);
   const [rideshare, setRideshare] = useState(false);
   const [passengerCount, setPassengerCount] = useState(2);
   const [locating, setLocating] = useState(false);
@@ -358,11 +358,14 @@ export default function BookingScreen() {
   // Wallet-split computation — how much wallet can cover and what's left to charge
   const walletBalance = user?.walletBalance ?? 0;
   const currentFare = discountedFare ?? fare?.total ?? 0;
-  // Wallet credit only applies when:
-  //   - user is signed in with a wallet balance
-  //   - payment is NOT already "wallet" (wallet-only covers by itself)
-  //   - user has toggled "Use wallet credit" on
-  const walletContribution = useWalletCredit && walletBalance > 0 && payment !== "wallet"
+  // Wallet credit only applies to Card payments (never Account/TM-cash/Cash/ACC/Gift).
+  // Clear wallet toggle when leaving card (never bleed onto Account/TM-cash/Cash).
+  useEffect(() => {
+    if (payment !== "card" && useWalletCredit) setUseWalletCredit(false);
+  }, [payment, useWalletCredit]);
+
+  const walletEligible = payment === "card";
+  const walletContribution = walletEligible && useWalletCredit && walletBalance > 0
     ? Math.min(walletBalance, currentFare)
     : 0;
   const netFare = Math.max(0, currentFare - walletContribution);
@@ -707,6 +710,7 @@ export default function BookingScreen() {
           companyId: effectiveCompany.id,
           vehicleType,
           payment,
+          walletAmountPending: payment === "card" && walletContribution > 0 ? walletContribution : 0,
           fare: discountedFare ?? fare?.total ?? 0,
           route,
           promoCode: discount > 0 ? promo : undefined,
@@ -794,31 +798,44 @@ export default function BookingScreen() {
       }
 
       if (payment === "card") {
-        // If the user applied wallet credit, Stripe only charges the remainder
-        const stripeAmount = walletContribution > 0 ? netFare : (discountedFare ?? fare?.total ?? 0);
-        setBookingStatus("Opening payment…");
-        await openStripeCheckout({
-          cid: effectiveCompany.id,
-          bookingId: bookingId!,
-          description: `Taxi booking – ${pickup.address} to ${destination.address}`,
-          amount: stripeAmount,
-          currency: "nzd",
-          email: user?.email ?? undefined,
-        });
-        // Stripe opened (or returned) successfully — deduct wallet credit and activate dispatch.
-        if (walletContribution > 0) {
-          updateWallet(-walletContribution).catch(() => {});
+        // Wallet covers full fare — no Stripe; mark paid + release to dispatch.
+        if (walletContribution > 0 && netFare <= 0) {
+          setBookingStatus("Applying wallet…");
+          await updateWallet(-walletContribution);
+          await verifyAndDispatchBooking({
+            companyId: effectiveCompany.id,
+            bookingId: bookingId!,
+            walletOnly: true,
+            walletAmountApplied: walletContribution,
+          });
+        } else {
+          const stripeAmount = walletContribution > 0 ? netFare : (discountedFare ?? fare?.total ?? 0);
+          setBookingStatus("Opening payment…");
+          const session = await openStripeCheckout({
+            cid: effectiveCompany.id,
+            bookingId: bookingId!,
+            description: `Taxi booking – ${pickup.address} to ${destination.address}`,
+            amount: stripeAmount,
+            currency: "nzd",
+            email: user?.email ?? undefined,
+            walletAmountPending: walletContribution > 0 ? walletContribution : 0,
+          });
+          setBookingStatus("Confirming payment…");
+          await verifyAndDispatchBooking({
+            companyId: effectiveCompany.id,
+            bookingId: bookingId!,
+            sessionId: session.sessionId,
+            walletAmountPending: walletContribution > 0 ? walletContribution : 0,
+          });
+          // Debit wallet only after Stripe confirms (website parity).
+          if (walletContribution > 0) {
+            updateWallet(-walletContribution).catch(() => {});
+          }
         }
-        // Upgrade RTDB status from "PendingPayment" to "Waiting" to release to dispatcher.
-        set(ref(rtdb, `pendingjobs/${effectiveCompany.id}/${bookingId}/Status`), "Waiting").catch(() => {});
-        set(ref(rtdb, `allbookings/${effectiveCompany.id}/${bookingId}/Status`), "Waiting").catch(() => {});
       } else if (payment === "wallet") {
         // Pure wallet payment — deduct the full fare immediately from the wallet
         const fareToDeduct = discountedFare ?? fare?.total ?? 0;
         updateWallet(-fareToDeduct).catch(() => {});
-      } else if (walletContribution > 0) {
-        // Cash/account with partial wallet top-up — deduct the wallet contribution
-        updateWallet(-walletContribution).catch(() => {});
       }
 
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -1520,7 +1537,7 @@ export default function BookingScreen() {
             )}
 
             {/* Wallet Credit — shown when user has a balance and isn't already paying by wallet */}
-            {walletBalance > 0 && payment !== "wallet" && currentFare > 0 && (
+            {walletBalance > 0 && walletEligible && currentFare > 0 && (
               <View style={[styles.rideshareCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
                 <View style={styles.rideshareHeader}>
                   <View style={styles.rideshareLeft}>

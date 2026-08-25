@@ -84,6 +84,7 @@ export interface ActiveRide {
   companyId: string;
   vehicleType: VehicleType;
   payment: PaymentMethodRide;
+  walletAmountPending?: number;
   fare: number;
   status: RideStatus;
   searchPhase?: SearchPhase;
@@ -807,6 +808,8 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       jobId: firestoreId,
       CompanyId: companyId,
       Source: "PassengerApp",
+      BookingSource: "PassengerApp",
+      CreatedBy: "APP",
       // Status logic:
       //   Scheduled → future booking, held for timed dispatch
       //   PendingPayment → card booking, held until Stripe payment is confirmed
@@ -840,6 +843,15 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       estimatedFare: params.fare,
       PaymentMethod: params.payment,
       paymentMethod: params.payment,
+      ...(params.walletAmountPending && params.walletAmountPending > 0
+        ? {
+            walletAmountPending: params.walletAmountPending,
+            WalletAmountPending: params.walletAmountPending,
+          }
+        : {}),
+      ...(params.payment === "card"
+        ? { paymentStatus: "pending", PaymentStatus: "pending" }
+        : {}),
       // Business Account (written when payment === "business_account")
       ...(params.businessAccountId ? {
         BusinessAccountId: params.businessAccountId,
@@ -936,8 +948,11 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
     } catch (apiErr) {
       console.warn("[BookingAPI] API server unreachable — trying direct RTDB fallback:", (apiErr as Error).message);
       try {
-        await rtdbSet(rtdbRef(rtdb, `pendingjobs/${companyId}/${firestoreId}`), rtdbJobData);
-        // Also mirror to allbookings so the dispatcher's secondary listener sees it
+        const hold =
+          String(rtdbJobData.Status || "").toLowerCase() === "pendingpayment";
+        if (!hold) {
+          await rtdbSet(rtdbRef(rtdb, `pendingjobs/${companyId}/${firestoreId}`), rtdbJobData);
+        }
         rtdbSet(rtdbRef(rtdb, `allbookings/${companyId}/${firestoreId}`), rtdbJobData).catch(() => {});
         rtdbSet(rtdbRef(rtdb, `Passengerjobs/${passengerUid}/${firestoreId}`), rtdbJobData).catch(() => {});
         console.warn("[BookingAPI] Fallback RTDB write succeeded — job dispatched via direct write");

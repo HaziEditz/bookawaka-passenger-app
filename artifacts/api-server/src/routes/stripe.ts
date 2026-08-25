@@ -1,7 +1,47 @@
-import { Router } from "express";
+import { Router, type Request, type Response } from "express";
 
 const router = Router();
 const STRIPE_SECRET_KEY = process.env["STRIPE_SECRET_KEY"] ?? "";
+const RTDB_BASE = "https://bookawaka2026-564e1-default-rtdb.firebaseio.com";
+
+function extractToken(req: Request): string | null {
+  const auth = req.headers.authorization;
+  if (auth?.startsWith("Bearer ")) return auth.slice(7);
+  return null;
+}
+
+async function rtdbGet(path: string, idToken: string): Promise<any> {
+  const res = await fetch(`${RTDB_BASE}/${path}.json?auth=${idToken}`);
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`RTDB GET ${path} failed: ${res.status} ${body}`);
+  }
+  return res.json();
+}
+
+async function rtdbPut(path: string, data: unknown, idToken: string): Promise<void> {
+  const res = await fetch(`${RTDB_BASE}/${path}.json?auth=${idToken}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`RTDB PUT ${path} failed: ${res.status} ${body}`);
+  }
+}
+
+async function rtdbPatch(path: string, data: unknown, idToken: string): Promise<void> {
+  const res = await fetch(`${RTDB_BASE}/${path}.json?auth=${idToken}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`RTDB PATCH ${path} failed: ${res.status} ${body}`);
+  }
+}
 
 router.post("/stripe/create-booking-payment", async (req, res) => {
   if (!STRIPE_SECRET_KEY) {
@@ -9,7 +49,7 @@ router.post("/stripe/create-booking-payment", async (req, res) => {
     return;
   }
 
-  const { cid, bookingId, description, amount, currency = "nzd", email } = req.body;
+  const { cid, bookingId, description, amount, currency = "nzd", email, walletAmountPending } = req.body;
 
   if (!bookingId || !amount || !description) {
     res.status(400).json({ error: "bookingId, amount, and description are required" });
@@ -39,6 +79,8 @@ router.post("/stripe/create-booking-payment", async (req, res) => {
       cancel_url: `${baseUrl}/?payment=cancelled&booking=${bookingId}`,
       "metadata[bookingId]": bookingId,
       "metadata[companyId]": cid ?? "",
+      "metadata[type]": "booking_payment",
+      "metadata[walletAmountPending]": String(walletAmountPending ?? 0),
     };
 
     if (email) {
@@ -58,7 +100,7 @@ router.post("/stripe/create-booking-payment", async (req, res) => {
       body,
     });
 
-    const data = await response.json() as any;
+    const data = (await response.json()) as any;
 
     if (!response.ok) {
       res.status(502).json({ error: data?.error?.message ?? "Stripe session creation failed" });
@@ -68,6 +110,169 @@ router.post("/stripe/create-booking-payment", async (req, res) => {
     res.json({ url: data.url, sessionId: data.id });
   } catch (err) {
     res.status(500).json({ error: "Failed to create payment session" });
+  }
+});
+
+/**
+ * Confirm Stripe (or wallet-only) then write pendingjobs — website parity.
+ * Card holds must NEVER enter the live dispatch pool before this succeeds.
+ */
+router.post("/stripe/verify-and-dispatch", async (req: Request, res: Response) => {
+  const idToken = extractToken(req);
+  if (!idToken) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+
+  const {
+    sessionId,
+    bookingId,
+    companyId,
+    walletOnly,
+    walletAmountPending,
+    walletAmountApplied,
+  } = req.body as {
+    sessionId?: string;
+    bookingId?: string;
+    companyId?: string;
+    walletOnly?: boolean;
+    walletAmountPending?: number;
+    walletAmountApplied?: number;
+  };
+
+  if (!bookingId || !companyId) {
+    res.status(400).json({ error: "bookingId and companyId are required" });
+    return;
+  }
+
+  if (!walletOnly && !sessionId) {
+    res.status(400).json({ error: "sessionId is required unless walletOnly" });
+    return;
+  }
+
+  try {
+    let stripeSessionId: string | null = null;
+
+    if (!walletOnly) {
+      if (!STRIPE_SECRET_KEY) {
+        res.status(503).json({ error: "Stripe not configured" });
+        return;
+      }
+      const response = await fetch(
+        `https://api.stripe.com/v1/checkout/sessions/${encodeURIComponent(sessionId!)}`,
+        { headers: { Authorization: `Bearer ${STRIPE_SECRET_KEY}` } },
+      );
+      const session = (await response.json()) as any;
+      if (!response.ok) {
+        res.status(502).json({ error: session?.error?.message ?? "Stripe retrieve failed" });
+        return;
+      }
+      if (session.payment_status !== "paid") {
+        res.status(402).json({ error: "Payment not completed", payment_status: session.payment_status });
+        return;
+      }
+      const meta = session.metadata ?? {};
+      if (
+        meta.bookingId !== bookingId ||
+        meta.companyId !== companyId ||
+        meta.type !== "booking_payment"
+      ) {
+        res.status(403).json({ error: "Session metadata does not match booking" });
+        return;
+      }
+      stripeSessionId = session.id;
+    }
+
+    const existing = await rtdbGet(`allbookings/${companyId}/${bookingId}`, idToken);
+    if (!existing || typeof existing !== "object") {
+      res.status(404).json({ error: "Booking not found" });
+      return;
+    }
+
+    const existingSt = String(existing.Status ?? existing.status ?? "").toLowerCase();
+    if (
+      existingSt === "cancelled" ||
+      existingSt === "canceled" ||
+      existingSt === "completed" ||
+      existingSt === "closed"
+    ) {
+      res.json({ ok: true, alreadyDispatched: true, terminal: existingSt });
+      return;
+    }
+
+    if (String(existing.paymentStatus ?? "").toLowerCase() === "paid") {
+      const pj = await rtdbGet(`pendingjobs/${companyId}/${bookingId}`, idToken).catch(() => null);
+      if (!pj) {
+        const scheduledMs = Number(existing.ScheduledFor ?? existing.scheduledFor ?? 0);
+        const isScheduled = Number.isFinite(scheduledMs) && scheduledMs > Date.now() + 60_000;
+        if (!isScheduled) {
+          await rtdbPut(`pendingjobs/${companyId}/${bookingId}`, existing, idToken);
+        }
+      }
+      res.json({ ok: true, alreadyDispatched: true });
+      return;
+    }
+
+    const paidAt = new Date().toISOString();
+    const scheduledMs = Number(existing.ScheduledFor ?? existing.scheduledFor ?? 0);
+    const isScheduled = Number.isFinite(scheduledMs) && scheduledMs > Date.now() + 60_000;
+    const postPayStatus = isScheduled ? "Scheduled" : "Waiting";
+
+    const pendingWallet =
+      Number(walletAmountPending ?? existing.walletAmountPending ?? existing.WalletAmountPending ?? 0) || 0;
+    const appliedWallet =
+      Number(walletAmountApplied ?? (walletOnly ? pendingWallet : pendingWallet) ?? 0) || 0;
+
+    const paidFields: Record<string, unknown> = {
+      Status: postPayStatus,
+      status: postPayStatus,
+      BookingStatus: postPayStatus,
+      paymentMethod: walletOnly ? "wallet" : "card",
+      PaymentMethod: walletOnly ? "wallet" : "card",
+      paymentStatus: "paid",
+      PaymentStatus: "paid",
+      isPrePaid: true,
+      IsPrePaid: true,
+      paidAt,
+      PaidAt: paidAt,
+      BookingSource: existing.BookingSource || existing.Source || "PassengerApp",
+      Source: existing.Source || "PassengerApp",
+      CreatedBy: existing.CreatedBy || "APP",
+    };
+    if (stripeSessionId) {
+      paidFields.stripeSessionId = stripeSessionId;
+      paidFields.StripeSessionId = stripeSessionId;
+    }
+    if (appliedWallet > 0) {
+      paidFields.walletAmountApplied = appliedWallet;
+      paidFields.WalletAmountApplied = appliedWallet;
+      paidFields.walletAmountPending = null;
+      paidFields.WalletAmountPending = null;
+      paidFields.walletDebited = true;
+    }
+
+    const paidBooking = { ...existing, ...paidFields };
+
+    await rtdbPatch(`allbookings/${companyId}/${bookingId}`, paidFields, idToken);
+
+    const passengerUid =
+      existing.passengerId || existing.PassengerId || existing.passengerUid || null;
+    if (passengerUid) {
+      await rtdbPatch(`Passengerjobs/${passengerUid}/${bookingId}`, paidFields, idToken).catch(() => {});
+    }
+
+    if (!isScheduled) {
+      await rtdbPut(`pendingjobs/${companyId}/${bookingId}`, paidBooking, idToken);
+    }
+
+    req.log?.info?.(
+      { bookingId, companyId, postPayStatus, walletOnly: !!walletOnly },
+      "verify-and-dispatch: card/wallet paid — released to dispatch",
+    );
+    res.json({ ok: true, alreadyDispatched: false, status: postPayStatus });
+  } catch (err: any) {
+    req.log?.error?.({ err }, "POST /stripe/verify-and-dispatch error");
+    res.status(500).json({ error: err.message ?? "Verification failed" });
   }
 });
 
