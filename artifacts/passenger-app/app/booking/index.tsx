@@ -32,6 +32,7 @@ import { PlaceDetail, reverseGeocode } from "@/lib/googlePlaces";
 import { useTMSettings, calcTMSubsidy } from "@/lib/tmSettings";
 import { useColors } from "@/hooks/useColors";
 import { openStripeCheckout } from "@/lib/stripePayment";
+import { useAppConfig } from "@/context/AppConfigContext";
 import {
   FALLBACK_TZ,
   getTZTimeParts,
@@ -47,6 +48,7 @@ export default function BookingScreen() {
   const { user, firebaseUser, updateWallet } = useAuth();
   const { startRide, abortRide } = useRide();
   const { settings: tmSettings } = useTMSettings();
+  const { platformCashEnabled } = useAppConfig();
   const insets = useSafeAreaInsets();
   const { companies, loading: companiesLoading } = useCompanies();
 
@@ -125,6 +127,14 @@ export default function BookingScreen() {
   // Reset resolved state when inputs change
   useEffect(() => { setResolvedBA(null); setBaError(null); }, [businessAccountInput, purchaseOrderInput]);
   useEffect(() => { setResolvedACC(null); setAccError(null); }, [accClaimInput]);
+
+  // Non-TM only: if platform cash is disabled while Cash is selected, fall back to Card.
+  // TM remainder always keeps Cash available (business rule).
+  useEffect(() => {
+    if (!isTM && !platformCashEnabled && payment === "cash") {
+      setPayment("card");
+    }
+  }, [isTM, platformCashEnabled, payment]);
   useEffect(() => { setResolvedGiftCard(null); setGiftCardError(null); }, [giftCardInput]);
 
   // When a payment method is deselected, clear its state
@@ -279,7 +289,7 @@ export default function BookingScreen() {
       if (!tmApprovedCompanies.find((c) => c.id === company.id)) {
         setCompany(tmApprovedCompanies[0]);
       }
-      setPayment("card");
+      setPayment("cash");
       // §113 — auto-fill from saved profile card if one exists
       if (firebaseUser?.uid) {
         try {
@@ -450,26 +460,54 @@ export default function BookingScreen() {
         setBaError("No business accounts found for this company.");
         return false;
       }
-      const accounts = snap.val() as Record<string, { accountNumber?: string; name?: string; purchaseOrders?: Record<string, { poNumber?: string }> }>;
-      const matchEntry = Object.entries(accounts).find(
-        ([, v]) => v.accountNumber?.toUpperCase() === accountNum.toUpperCase()
-      );
+      const accounts = snap.val() as Record<
+        string,
+        {
+          accountNumber?: string;
+          accountCode?: string;
+          AccountCode?: string;
+          name?: string;
+          active?: boolean;
+          status?: string;
+          purchaseOrders?: Record<string, { poNumber?: string }>;
+        }
+      >;
+      const matchEntry = Object.entries(accounts).find(([, v]) => {
+        const num = String(v.accountNumber ?? "").toUpperCase();
+        const code = String(v.accountCode ?? v.AccountCode ?? "").toUpperCase();
+        const needle = accountNum.toUpperCase();
+        return num === needle || code === needle;
+      });
       if (!matchEntry) {
         setBaError("Account number not found. Please check and try again.");
         return false;
       }
       const [accountId, accountData] = matchEntry;
-      // Validate PO
-      const pos = accountData.purchaseOrders ?? {};
-      const poEntry = Object.entries(pos).find(
-        ([, v]) => v.poNumber?.toUpperCase() === poNum.toUpperCase()
-      );
-      if (!poEntry) {
-        setBaError("Purchase order number not found on this account.");
+      if (accountData.active === false || (accountData.status && accountData.status !== "active")) {
+        setBaError("This account is not currently active.");
         return false;
       }
-      const [poId] = poEntry;
-      setResolvedBA({ id: accountId, name: accountData.name ?? accountNum, poId, poNumber: poNum });
+      // Validate PO when the account has purchase orders on file; otherwise allow account-only.
+      const pos = accountData.purchaseOrders ?? {};
+      const poKeys = Object.keys(pos);
+      if (poKeys.length > 0) {
+        const poEntry = Object.entries(pos).find(
+          ([, v]) => v.poNumber?.toUpperCase() === poNum.toUpperCase()
+        );
+        if (!poEntry) {
+          setBaError("Purchase order number not found on this account.");
+          return false;
+        }
+        const [poId] = poEntry;
+        setResolvedBA({ id: accountId, name: accountData.name ?? accountNum, poId, poNumber: poNum });
+      } else {
+        if (!poNum) {
+          // PO still required in UI, but accept any non-empty when account has no POs seeded
+          setBaError("Please enter a purchase order / reference for this account.");
+          return false;
+        }
+        setResolvedBA({ id: accountId, name: accountData.name ?? accountNum, poId: "manual", poNumber: poNum });
+      }
       return true;
     } catch {
       setBaError("Could not verify account. Please check your connection and try again.");
@@ -809,12 +847,18 @@ export default function BookingScreen() {
 
   const PAYMENT_OPTIONS: { id: PaymentMethodRide; label: string; icon: keyof typeof Feather.glyphMap }[] = isTM
     ? [
+        // TM remainder: Cash always available regardless of company/platform cash toggle
+        { id: "cash", label: "Cash", icon: "dollar-sign" },
         { id: "card", label: "Card", icon: "credit-card" },
         { id: "account", label: "Account", icon: "briefcase" },
         ...(showACC ? [{ id: "acc" as PaymentMethodRide, label: "ACC", icon: "shield" as keyof typeof Feather.glyphMap }] : []),
         { id: "gift_card" as PaymentMethodRide, label: "Gift Card", icon: "gift" as keyof typeof Feather.glyphMap },
       ]
     : [
+        // Regular (non-TM): Cash only when platform cash toggle allows it
+        ...(platformCashEnabled
+          ? [{ id: "cash" as PaymentMethodRide, label: "Cash", icon: "dollar-sign" as keyof typeof Feather.glyphMap }]
+          : []),
         { id: "card", label: "Card", icon: "credit-card" },
         ...(user ? [{ id: "wallet" as PaymentMethodRide, label: `Wallet ($${user.walletBalance.toFixed(2)})`, icon: "smartphone" as keyof typeof Feather.glyphMap }] : []),
         { id: "account", label: "Account", icon: "briefcase" },
