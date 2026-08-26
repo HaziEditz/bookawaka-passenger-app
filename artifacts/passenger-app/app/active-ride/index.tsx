@@ -71,7 +71,7 @@ function searchLabel(phase: SearchPhase | undefined, elapsed: string): string {
 export default function ActiveRideScreen() {
   const colors = useColors();
   const { notify } = useNotification();
-  const { activeRide, driverLocation, cancelRide, addStop, setRideStatus, clearRide } = useRide();
+  const { activeRide, driverLocation, cancelRide, addStop, clearRide } = useRide();
   const insets = useSafeAreaInsets();
   const elapsed = useElapsedTime(activeRide?.status === "searching");
   const [chatOpen, setChatOpen] = useState(false);
@@ -214,13 +214,6 @@ export default function ActiveRideScreen() {
     addStop(stop);
   };
 
-  const handleStartTrip = () => {
-    if (status === "arrived") {
-      setRideStatus("in_progress");
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    }
-  };
-
   const handleComplete = () => {
     if (status === "completed") {
       router.replace("/ride-complete");
@@ -308,6 +301,25 @@ export default function ActiveRideScreen() {
             <Text style={[styles.routeText, { color: colors.foreground }]} numberOfLines={1}>{destination.address}</Text>
           </View>
         </View>
+
+        {/* Driver at pickup — passive only; trip starts when driver marks On Board */}
+        {status === "arrived" && (
+          <View style={[styles.bookingReceivedBanner, { backgroundColor: "#22c55e12", borderColor: "#22c55e40" }]}>
+            <View style={styles.bookingReceivedTop}>
+              <View style={[styles.bookingReceivedIcon, { backgroundColor: "#22c55e20" }]}>
+                <Feather name="map-pin" size={18} color="#16a34a" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.bookingReceivedTitle, { color: "#14532d" }]}>
+                  Driver has arrived — waiting for pickup
+                </Text>
+                <Text style={[styles.bookingReceivedBody, { color: "#374151" }]}>
+                  No action needed. Your trip starts automatically once you&apos;re on board.
+                </Text>
+              </View>
+            </View>
+          </View>
+        )}
 
         {/* Trip started — clear indication when driver marks On Board */}
         {status === "in_progress" && (
@@ -464,11 +476,11 @@ export default function ActiveRideScreen() {
           </Pressable>
         )
         ) : status === "arrived" ? (
-          // Cancel is LOCKED once the driver is at the pickup address
-          <View style={styles.arrivedActions}>
-            <Pressable onPress={handleStartTrip} style={[styles.actionBtn, { backgroundColor: colors.primary, flex: 1 }]}>
-              <Text style={styles.actionBtnText}>Start Trip</Text>
-            </Pressable>
+          // Cancel locked at pickup; passenger does not start the trip — driver On Board flips status.
+          <View style={[styles.actionBtn, { backgroundColor: colors.success + "18" }]}>
+            <Text style={[styles.actionBtnText, { color: colors.success }]}>
+              Driver has arrived — waiting for pickup
+            </Text>
           </View>
         ) : status === "cancel_requested" ? (
           // Waiting for backend to confirm the cancellation — show spinner-style feedback
