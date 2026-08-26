@@ -126,6 +126,13 @@ type RtdbVehicle = Record<string, unknown>;
 type RtdbDriver = Record<string, unknown>;
 type RtdbCompany = Record<string, unknown>;
 
+function apiBaseUrl(): string {
+  const raw = process.env.EXPO_PUBLIC_API_URL ?? "";
+  const url = raw || (process.env.EXPO_PUBLIC_DOMAIN ? `https://${process.env.EXPO_PUBLIC_DOMAIN}/api` : "");
+  const clean = url.replace(/^(https?:\/\/[^/:]+):\d+(\/|$)/, "$1$2");
+  return clean.replace(/\/api$/, "");
+}
+
 export function CompaniesProvider({ children }: { children: React.ReactNode }) {
   const [companies, setCompanies] = useState<Company[]>([ANY_COMPANY]);
   const [loading, setLoading] = useState(true);
@@ -138,6 +145,8 @@ export function CompaniesProvider({ children }: { children: React.ReactNode }) {
     let onlineData: Record<string, RtdbDriver> = {};
     let vehicleData: Record<string, RtdbVehicle> = {};
     let tariffData: Record<string, unknown> = {};
+    /** Names from GET /api/companies (Admin SDK) — used when RTDB companyProfiles is unreadable. */
+    let apiNameById: Record<string, string> = {};
     let loaded = { companies: false, online: false, vehicles: false, tariffs: false };
     let rtdbUnsubs: Array<() => void> = [];
 
@@ -365,10 +374,13 @@ export function CompaniesProvider({ children }: { children: React.ReactNode }) {
           if (["inactive","disabled","suspended","false","0"].includes(status)) continue;
         }
 
-        // Resolve name: profile data → online driver hint → fallback
+        // Resolve name: profile → public API (/api/companies) → online hint → fallback
+        // (companyProfiles is often permission-denied for passengers; API uses Admin SDK.)
         let name: string;
         if (Object.keys(data).length > 0) {
           name = resolveName(id, data);
+        } else if (apiNameById[id]) {
+          name = apiNameById[id];
         } else {
           name = onlineDriverNameByCompany.get(id) ?? `Taxi Co. ${id}`;
         }
@@ -547,6 +559,29 @@ export function CompaniesProvider({ children }: { children: React.ReactNode }) {
       rtdbUnsubs = [u1, u2, u3, u4];
     }
 
+    // Public company directory (Admin SDK) — reliable names when RTDB profiles are denied.
+    let cancelled = false;
+    (async () => {
+      const base = apiBaseUrl();
+      if (!base) return;
+      try {
+        const res = await fetch(`${base}/api/companies`);
+        if (!res.ok) return;
+        const json = (await res.json()) as { companies?: Array<{ id?: string; name?: string }> };
+        const map: Record<string, string> = {};
+        for (const c of json.companies ?? []) {
+          const id = String(c.id || "").trim();
+          const name = String(c.name || "").trim();
+          if (id && name && !isLoadTestCompanyId(id)) map[id] = name;
+        }
+        if (cancelled) return;
+        apiNameById = map;
+        rebuild();
+      } catch (err) {
+        console.warn("[Companies] /api/companies name lookup failed:", err);
+      }
+    })();
+
     // Only subscribe once Firebase auth is ready (anonymous or real user).
     // Without an auth token onValue immediately errors with permission_denied.
     let prevUid: string | null = undefined as unknown as string | null;
@@ -566,6 +601,7 @@ export function CompaniesProvider({ children }: { children: React.ReactNode }) {
     });
 
     return () => {
+      cancelled = true;
       unsubAuth();
       rtdbUnsubs.forEach((u) => u());
     };

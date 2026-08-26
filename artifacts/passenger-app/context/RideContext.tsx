@@ -843,6 +843,21 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       estimatedFare: params.fare,
       PaymentMethod: params.payment,
       paymentMethod: params.payment,
+      // Card + known fare/dropoff → Fixed (no live meter), matching website bookings.ts.
+      ...(params.payment === "card" && typeof params.fare === "number" && params.fare > 0
+        ? {
+            TarriffId: "-1",
+            TariffId: "-1",
+            tariffId: "-1",
+            TarriffType: "Fixed",
+            TariffType: "Fixed",
+            TariffName: "Fixed",
+            tariffName: "Fixed",
+            CustomeRate: params.fare,
+            Fare: String(params.fare),
+            isFixedPrice: true,
+          }
+        : {}),
       ...(params.walletAmountPending && params.walletAmountPending > 0
         ? {
             walletAmountPending: params.walletAmountPending,

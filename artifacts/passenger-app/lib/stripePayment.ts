@@ -9,9 +9,6 @@ const apiBase = (): string => {
   return clean.replace(/\/api$/, "");
 };
 
-/** Deep-link scheme from app.json — Stripe success must return here, not the website. */
-const APP_SCHEME = "passenger-app";
-
 export interface StripeCheckoutParams {
   cid: string;
   bookingId: string;
@@ -30,6 +27,10 @@ export interface StripeCheckoutResult {
 /**
  * Creates a Stripe Checkout session and opens the URL.
  * Returns sessionId so the caller can verify-and-dispatch after the browser closes.
+ *
+ * Native return URLs must be HTTPS on our allowlisted host (not passenger-app://).
+ * Stripe → custom-scheme redirects show Chrome "site can't be reached" when the
+ * Custom Tab fails to hand off the scheme; AuthSession completes cleanly on HTTPS.
  */
 export async function openStripeCheckout(params: StripeCheckoutParams): Promise<StripeCheckoutResult> {
   const base = apiBase();
@@ -37,13 +38,14 @@ export async function openStripeCheckout(params: StripeCheckoutParams): Promise<
     ? `${base}/api/stripe/create-booking-payment`
     : "/api/stripe/create-booking-payment";
 
-  // Native app: return into the app via custom scheme (not the website booking-success page).
-  // Website/web builds omit these so the API keeps its customer-web success/cancel URLs.
   const useAppReturn = Platform.OS !== "web";
+  const returnHost = base || "https://bookawaka-production.up.railway.app";
   const successUrl = useAppReturn
-    ? `${APP_SCHEME}://stripe-return?booking=${encodeURIComponent(params.bookingId)}&cid=${encodeURIComponent(params.cid)}&session_id={CHECKOUT_SESSION_ID}`
+    ? `${returnHost}/passenger-app-return?booking=${encodeURIComponent(params.bookingId)}&cid=${encodeURIComponent(params.cid)}&session_id={CHECKOUT_SESSION_ID}`
     : undefined;
-  const cancelUrl = useAppReturn ? `${APP_SCHEME}://stripe-cancel` : undefined;
+  const cancelUrl = useAppReturn
+    ? `${returnHost}/passenger-app-cancel?booking=${encodeURIComponent(params.bookingId)}&cid=${encodeURIComponent(params.cid)}`
+    : undefined;
 
   let res: Response;
   try {
@@ -85,13 +87,10 @@ export async function openStripeCheckout(params: StripeCheckoutParams): Promise<
   if (Platform.OS === "web") {
     await Linking.openURL(url);
   } else {
-    // openAuthSessionAsync dismisses the browser when Stripe redirects to our scheme,
-    // so the user lands back in the app (booking flow then verify-and-dispatches).
-    const redirectUrl = `${APP_SCHEME}://stripe-return`;
-    await WebBrowser.openAuthSessionAsync(url, redirectUrl, {
-      preferEphemeralSession: true,
-      showInRecents: false,
-    });
+    // Match the HTTPS return path prefix so Custom Tabs dismiss into the app
+    // instead of trying to render passenger-app:// as a website.
+    const redirectUrl = `${returnHost}/passenger-app-return`;
+    await WebBrowser.openAuthSessionAsync(url, redirectUrl);
   }
 
   return { sessionId, url };
