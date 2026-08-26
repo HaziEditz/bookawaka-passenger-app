@@ -119,6 +119,10 @@ export interface ActiveRide {
   giftCardId?: string;
   /** Optional note for the driver / dispatcher (pickup instructions). */
   pickupNote?: string;
+  /** 4-digit PIN — show to passenger; tell driver verbally at pickup. */
+  pickupPin?: string;
+  imComingAt?: string;
+  noShowDeadlineAt?: string;
   // Cancellation policy tracking
   acceptedAt?: number;                  // timestamp (ms) when driver was first confirmed
   driverStartDistanceToPickup?: number; // km from driver's position at acceptance to pickup
@@ -215,6 +219,8 @@ interface RideContextType {
   /** Clear local ride without writing completion (Skip on complete modal). */
   clearRide: () => void;
   setRideStatus: (status: RideStatus) => void;
+  /** One-shot extension of the no-show wait after driver Arrived. */
+  signalImComing: () => Promise<boolean>;
 }
 
 const RideContext = createContext<RideContextType | null>(null);
@@ -695,6 +701,7 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
 
     const id = jobId;
     const firestoreId = jobId;
+    const pickupPin = String(Math.floor(Math.random() * 9000) + 1000);
 
     // Store immediately in a ref so abortRide can cancel RTDB even before state settles
     pendingJobRef.current = { companyId: params.companyId, jobId: firestoreId };
@@ -707,6 +714,7 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       eta: null,
       paymentStatus: "pending",
       trackingToken,
+      pickupPin,
     };
     if (!params.scheduledAt) {
       setActiveRide(ride);
@@ -815,6 +823,8 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       Source: "PassengerApp",
       BookingSource: "PassengerApp",
       CreatedBy: "APP",
+      PickupPin: pickupPin,
+      pickupPin,
       // Status logic:
       //   Scheduled → future booking, held for timed dispatch
       //   PendingPayment → card booking, held until Stripe payment is confirmed
@@ -1023,6 +1033,9 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       "On Board": "in_progress",
       PassengerOnBoard: "in_progress", passengeronboard: "in_progress",
       Boarded: "in_progress",    boarded: "in_progress",
+      Active: "in_progress",     active: "in_progress",
+      OnTrip: "in_progress",     ontrip: "in_progress",
+      "On Trip": "in_progress",
       // Trip done
       Done: "completed",       done: "completed",
       Completed: "completed",  completed: "completed",
@@ -1165,6 +1178,22 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       const eta = d.ETA ?? d.eta ?? d.Eta;
       if (eta != null) {
         setActiveRide((prev) => prev ? { ...prev, eta: Number(eta) } : prev);
+      }
+
+      // ── Pickup PIN / I'm coming deadline (fanout from dispatch) ───────────
+      const pinFromRtdb = String(d.PickupPin ?? d.pickupPin ?? "").trim();
+      const imComingAt = String(d.imComingAt ?? d.ImComingAt ?? "").trim();
+      const noShowDeadlineAt = String(d.noShowDeadlineAt ?? "").trim();
+      if (pinFromRtdb || imComingAt || noShowDeadlineAt) {
+        setActiveRide((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            ...(pinFromRtdb && !prev.pickupPin ? { pickupPin: pinFromRtdb } : {}),
+            ...(imComingAt ? { imComingAt } : {}),
+            ...(noShowDeadlineAt ? { noShowDeadlineAt } : {}),
+          };
+        });
       }
 
       // ── Status transition ────────────────────────────────────────────────
@@ -1431,6 +1460,44 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
     dispatchOverrideRef.current = false;
   };
 
+  const signalImComing = async (): Promise<boolean> => {
+    if (!activeRide?.firestoreId || !activeRide.companyId) return false;
+    if (activeRide.imComingAt) return true;
+    if (activeRide.status !== "arrived") return false;
+    try {
+      const dispatchBase =
+        process.env.EXPO_PUBLIC_DISPATCH_URL ||
+        "https://invt-production.up.railway.app";
+      const res = await fetch(`${dispatchBase.replace(/\/$/, "")}/api/job/im-coming`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          bookingId: activeRide.firestoreId,
+          companyId: activeRide.companyId,
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json?.ok) {
+        notify("Could not extend wait", String(json?.error || "Try again"), "error");
+        return false;
+      }
+      setActiveRide((prev) =>
+        prev
+          ? {
+              ...prev,
+              imComingAt: json.imComingAt || new Date().toISOString(),
+              noShowDeadlineAt: json.noShowDeadlineAt || prev.noShowDeadlineAt,
+            }
+          : prev,
+      );
+      notify("Driver notified", "You've got a bit more time — head to the pickup now.", "success");
+      return true;
+    } catch {
+      notify("Could not extend wait", "Check your connection and try again.", "error");
+      return false;
+    }
+  };
+
   const completeRide = async (rating: number, tip: number) => {
     try {
       if (activeRide?.firestoreId && activeRide?.companyId) {
@@ -1506,7 +1573,7 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
 
   return (
     <RideContext.Provider
-      value={{ activeRide, driverLocation, startRide, cancelRide, abortRide, addStop, completeRide, clearRide, setRideStatus }}
+      value={{ activeRide, driverLocation, startRide, cancelRide, abortRide, addStop, completeRide, clearRide, setRideStatus, signalImComing }}
     >
       {children}
     </RideContext.Provider>

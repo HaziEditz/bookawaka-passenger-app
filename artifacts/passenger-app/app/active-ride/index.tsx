@@ -71,7 +71,7 @@ function searchLabel(phase: SearchPhase | undefined, elapsed: string): string {
 export default function ActiveRideScreen() {
   const colors = useColors();
   const { notify } = useNotification();
-  const { activeRide, driverLocation, cancelRide, addStop, clearRide } = useRide();
+  const { activeRide, driverLocation, cancelRide, addStop, clearRide, signalImComing } = useRide();
   const insets = useSafeAreaInsets();
   const elapsed = useElapsedTime(activeRide?.status === "searching");
   const [chatOpen, setChatOpen] = useState(false);
@@ -314,10 +314,37 @@ export default function ActiveRideScreen() {
                   Driver has arrived — waiting for pickup
                 </Text>
                 <Text style={[styles.bookingReceivedBody, { color: "#374151" }]}>
-                  No action needed. Your trip starts automatically once you&apos;re on board.
+                  No action needed. Tell the driver your name and PIN. Your trip starts automatically once you&apos;re on board.
                 </Text>
               </View>
             </View>
+            {!activeRide.imComingAt ? (
+              <Pressable
+                onPress={() => { void signalImComing(); }}
+                style={{ marginTop: 10, alignSelf: "flex-start", paddingVertical: 8, paddingHorizontal: 12, borderRadius: 10, backgroundColor: "#16a34a20" }}
+              >
+                <Text style={{ color: "#14532d", fontFamily: "Inter_600SemiBold", fontSize: 13 }}>
+                  I&apos;m coming — need a bit more time
+                </Text>
+              </Pressable>
+            ) : (
+              <Text style={{ marginTop: 10, color: "#166534", fontFamily: "Inter_500Medium", fontSize: 13 }}>
+                Extra wait requested — head to the pickup now.
+              </Text>
+            )}
+          </View>
+        )}
+
+        {/* Pickup PIN — tell the driver verbally */}
+        {!!activeRide.pickupPin && status !== "completed" && status !== "cancelled" && status !== "no_show" && (
+          <View style={[styles.infoCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>PICKUP PIN</Text>
+            <Text style={[styles.fareValue, { color: colors.primary, letterSpacing: 4 }]}>
+              {activeRide.pickupPin}
+            </Text>
+            <Text style={[styles.fareLabel, { color: colors.mutedForeground, marginTop: 4 }]}>
+              Tell this code to your driver when they arrive.
+            </Text>
           </View>
         )}
 
