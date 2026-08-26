@@ -12,8 +12,13 @@
     "preview": {
       "distribution": "internal",
       "channel": "preview",
+      "pnpm": "9.15.9",
       "android": {
         "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://bookawaka-production.up.railway.app",
+        "EXPO_PUBLIC_DOMAIN": "bookawaka-production.up.railway.app"
       }
     },
     "production": {

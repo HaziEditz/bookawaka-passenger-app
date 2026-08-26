@@ -15,6 +15,7 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { AppBuildLabel } from "@/components/AppBuildLabel";
 import { useAuth } from "@/context/AuthContext";
 import { useColors } from "@/hooks/useColors";
 
@@ -206,6 +207,7 @@ export default function ProfileScreen() {
           <Text style={[styles.guestDisclaimer, { color: colors.mutedForeground }]}>
             You can still browse the app as a guest
           </Text>
+          <AppBuildLabel style={{ marginTop: 12, marginBottom: 4 }} />
         </ScrollView>
       </View>
     );
@@ -426,6 +428,7 @@ export default function ProfileScreen() {
           <Feather name="log-out" size={18} color={colors.destructive} />
           <Text style={[styles.signOutBtnText, { color: colors.destructive }]}>Sign Out</Text>
         </Pressable>
+        <AppBuildLabel style={{ marginTop: 16, marginBottom: 8 }} />
       </ScrollView>
 
       {/* Remove Address Confirmation Modal */}
