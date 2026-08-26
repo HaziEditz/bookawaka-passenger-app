@@ -122,7 +122,12 @@ export default function RideCompleteScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
-      <ScrollView contentContainerStyle={[styles.content, { paddingTop: insets.top + 40, paddingBottom: insets.bottom + 110 }]}>
+      <ScrollView
+        style={{ flex: 1 }}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        contentContainerStyle={[styles.content, { paddingTop: insets.top + 40, paddingBottom: insets.bottom + 110 }]}
+      >
         <View style={[styles.successIcon, { backgroundColor: colors.success + "20" }]}>
           <Feather name="check-circle" size={52} color={colors.success} />
         </View>
@@ -193,7 +198,13 @@ export default function RideCompleteScreen() {
             {TIPS.map((t) => (
               <Pressable
                 key={t}
-                onPress={() => { Haptics.selectionAsync(); setTip(t); }}
+                hitSlop={8}
+                // onPressIn so tip selection wins even if a focused TextInput
+                // would otherwise swallow the first tap (ScrollView default).
+                onPressIn={() => {
+                  Haptics.selectionAsync();
+                  setTip(t);
+                }}
                 style={({ pressed }) => [
                   styles.tipBtn,
                   { backgroundColor: tip === t ? colors.primary : colors.card, borderColor: tip === t ? colors.primary : colors.border, opacity: pressed ? 0.8 : 1 },
