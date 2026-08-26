@@ -16,7 +16,7 @@ import { useTripHistory } from "@/context/TripContext";
 import { formatCurrency } from "@/lib/fareCalculator";
 import { useColors } from "@/hooks/useColors";
 import { useSuperBroadcast } from "@/hooks/useSuperBroadcast";
-import { useCompanies } from "@/context/CompaniesContext";
+import { useCompanies, isLoadTestCompanyId } from "@/context/CompaniesContext";
 import { FALLBACK_TZ } from "@/lib/timezone";
 
 const SERVICE_TILES = [
@@ -36,7 +36,9 @@ export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const broadcasts = useSuperBroadcast();
   const { companies, loading: companiesLoading } = useCompanies();
-  const liveCompanies = companies.filter((c) => c.id !== "any" && c.driversAvailable !== false);
+  const liveCompanies = companies.filter(
+    (c) => c.id !== "any" && !isLoadTestCompanyId(c.id) && c.driversAvailable !== false,
+  );
   const recent = history.slice(0, 3);
   const topPadding = Platform.OS === "web" ? insets.top + 67 : insets.top;
 

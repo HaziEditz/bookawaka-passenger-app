@@ -9,6 +9,9 @@ const apiBase = (): string => {
   return clean.replace(/\/api$/, "");
 };
 
+/** Deep-link scheme from app.json — Stripe success must return here, not the website. */
+const APP_SCHEME = "passenger-app";
+
 export interface StripeCheckoutParams {
   cid: string;
   bookingId: string;
@@ -34,6 +37,14 @@ export async function openStripeCheckout(params: StripeCheckoutParams): Promise<
     ? `${base}/api/stripe/create-booking-payment`
     : "/api/stripe/create-booking-payment";
 
+  // Native app: return into the app via custom scheme (not the website booking-success page).
+  // Website/web builds omit these so the API keeps its customer-web success/cancel URLs.
+  const useAppReturn = Platform.OS !== "web";
+  const successUrl = useAppReturn
+    ? `${APP_SCHEME}://stripe-return?booking=${encodeURIComponent(params.bookingId)}&cid=${encodeURIComponent(params.cid)}&session_id={CHECKOUT_SESSION_ID}`
+    : undefined;
+  const cancelUrl = useAppReturn ? `${APP_SCHEME}://stripe-cancel` : undefined;
+
   let res: Response;
   try {
     res = await fetch(endpoint, {
@@ -47,6 +58,8 @@ export async function openStripeCheckout(params: StripeCheckoutParams): Promise<
         currency: params.currency ?? "nzd",
         email: params.email ?? undefined,
         walletAmountPending: params.walletAmountPending ?? 0,
+        ...(successUrl ? { successUrl } : {}),
+        ...(cancelUrl ? { cancelUrl } : {}),
       }),
     });
   } catch {
@@ -72,8 +85,12 @@ export async function openStripeCheckout(params: StripeCheckoutParams): Promise<
   if (Platform.OS === "web") {
     await Linking.openURL(url);
   } else {
-    await WebBrowser.openBrowserAsync(url, {
-      presentationStyle: WebBrowser.WebBrowserPresentationStyle.FULL_SCREEN,
+    // openAuthSessionAsync dismisses the browser when Stripe redirects to our scheme,
+    // so the user lands back in the app (booking flow then verify-and-dispatches).
+    const redirectUrl = `${APP_SCHEME}://stripe-return`;
+    await WebBrowser.openAuthSessionAsync(url, redirectUrl, {
+      preferEphemeralSession: true,
+      showInRecents: false,
     });
   }
 

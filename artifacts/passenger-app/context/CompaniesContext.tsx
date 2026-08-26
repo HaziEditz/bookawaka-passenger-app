@@ -82,6 +82,21 @@ function resolveName(id: string, data: Record<string, unknown>): string {
   return `Company ${id}`;
 }
 
+/** Synthetic load-test / regression harness tenants (bwtest*) — never offer to passengers. */
+export function isLoadTestCompanyId(cid: string): boolean {
+  const c = String(cid || "").trim().toLowerCase();
+  if (!c) return false;
+  return c === "bwtest" || c === "bwtesttariff" || c.startsWith("bwtest");
+}
+
+/** Reject Firebase push-ids mistaken for company keys when profiles are unavailable. */
+function looksLikeRealCompanyId(cid: string): boolean {
+  const c = String(cid || "").trim();
+  if (!c || c.startsWith("-")) return false;
+  if (isLoadTestCompanyId(c)) return false;
+  return true;
+}
+
 const ANY_COMPANY: Company = {
   id: "any",
   name: "Any Available",
@@ -321,16 +336,22 @@ export function CompaniesProvider({ children }: { children: React.ReactNode }) {
       let colorIdx = 1;
 
       // ── 3. Build company list ─────────────────────────────────────────────
-      // If companyProfiles loaded with data, show ONLY companies with a real
-      // profile (filters ghost/stale driver sessions for non-existent companies).
-      // If companyProfiles is empty (rules not yet applied), fall back to all
-      // companies that have any online presence.
-      const profileIds = Object.keys(companyData);
+      // Prefer companyProfiles (real tenants). Never surface load-test harness
+      // tenants (bwtest*). If profiles are empty/unreadable, fall back to
+      // vehicles + online — but still exclude load-test and Firebase push-ids.
+      // (Online-only fallback previously promoted bwtest when it was the only
+      // public online node and companyProfiles was permission-denied.)
+      const profileIds = Object.keys(companyData).filter(looksLikeRealCompanyId);
+      const fallbackIds = [
+        ...onlineVehiclesByCompany.keys(),
+        ...companyVehicleTypes.keys(),
+      ].filter(looksLikeRealCompanyId);
       const allCompanyIds = profileIds.length > 0
         ? new Set(profileIds)
-        : new Set(Array.from(onlineVehiclesByCompany.keys()));
+        : new Set(fallbackIds);
 
       for (const id of allCompanyIds) {
+        if (isLoadTestCompanyId(id)) continue;
         const liveVehicles = onlineVehiclesByCompany.get(id);
         const hasAvailableDrivers = !!(liveVehicles && liveVehicles.size > 0);
 

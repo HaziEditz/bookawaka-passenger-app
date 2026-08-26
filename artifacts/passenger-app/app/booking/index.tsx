@@ -21,7 +21,7 @@ import { PlacesAutocomplete } from "@/components/PlacesAutocomplete";
 import { RouteMap } from "@/components/RouteMap";
 import { TMCardScanner } from "@/components/TMCardScanner";
 import { Company, VehicleType, VEHICLES, VEHICLE_CAPACITY, VEHICLE_LABELS } from "@/constants/companies";
-import { useCompanies, getVehicleTariff } from "@/context/CompaniesContext";
+import { useCompanies, getVehicleTariff, isLoadTestCompanyId } from "@/context/CompaniesContext";
 import { useAuth } from "@/context/AuthContext";
 import { useRide, Stop, PaymentMethodRide, TMPassenger } from "@/context/RideContext";
 import { ref, onValue, get, set, update } from "firebase/database";
@@ -199,9 +199,20 @@ export default function BookingScreen() {
   useEffect(() => {
     if (!companiesLoading && companies.length > 0) {
       setCompany((prev) => {
-        // Prefer keeping the current selection only if it is still online
-        const found = companies.find((c) => c.id === prev.id && c.driversAvailable !== false);
-        const next = found ?? companies.find((c) => c.id !== "any" && c.driversAvailable !== false) ?? companies.find((c) => c.id !== "any") ?? companies[0];
+        // Prefer keeping the current selection only if it is still online and not load-test
+        const found = companies.find(
+          (c) =>
+            c.id === prev.id &&
+            !isLoadTestCompanyId(c.id) &&
+            c.driversAvailable !== false,
+        );
+        const next =
+          found ??
+          companies.find(
+            (c) => c.id !== "any" && !isLoadTestCompanyId(c.id) && c.driversAvailable !== false,
+          ) ??
+          companies.find((c) => c.id !== "any" && !isLoadTestCompanyId(c.id)) ??
+          companies[0];
         // If company is actually changing, reset vehicleType to first available
         if (next.id !== prev.id && next.vehicles.length > 0) {
           setVehicleType(next.vehicles[0]);
@@ -224,7 +235,9 @@ export default function BookingScreen() {
   const [scannerOpen, setScannerOpen] = useState(false);
   const [editingPassengerId, setEditingPassengerId] = useState<string | null>(null);
 
-  const onlineCompanies = companies.filter((c) => c.driversAvailable !== false);
+  const onlineCompanies = companies.filter(
+    (c) => !isLoadTestCompanyId(c.id) && c.driversAvailable !== false,
+  );
   const tmApprovedCompanies = onlineCompanies.filter((c) => c.tmApproved);
   const visibleCompanies = isTM ? tmApprovedCompanies : onlineCompanies;
 
@@ -687,14 +700,26 @@ export default function BookingScreen() {
     // If "Any Available" was selected, resolve to the first real registered company.
     // For ASAP rides, prefer companies with drivers online. For scheduled rides,
     // any real company will do — drivers may be available at the scheduled time.
+    // Never resolve to load-test harness tenants (bwtest*).
+    const realCompanies = companies.filter(
+      (c) => c.id !== "any" && !isLoadTestCompanyId(c.id),
+    );
     const effectiveCompany =
       company.id === "any"
         ? scheduledAt
-          ? (companies.find((c) => c.id !== "any") ?? company)
-          : (companies.find((c) => c.id !== "any" && c.driversAvailable !== false) ??
-             companies.find((c) => c.id !== "any") ??
+          ? (realCompanies[0] ?? company)
+          : (realCompanies.find((c) => c.driversAvailable !== false) ??
+             realCompanies[0] ??
              company)
         : company;
+
+    if (isLoadTestCompanyId(effectiveCompany.id)) {
+      Alert.alert(
+        "Company unavailable",
+        "This test company is not available for passenger bookings. Please choose Invercargill Taxis or another live company.",
+      );
+      return;
+    }
 
     setStripeError(null);
     setBooking(true);

@@ -27,6 +27,7 @@ import {
   addNotificationReceivedListener,
   addNotificationResponseListener,
 } from "@/lib/pushNotifications";
+import * as Updates from "expo-updates";
 
 SplashScreen.preventAutoHideAsync();
 
@@ -49,6 +50,19 @@ function RootLayoutNav() {
       <Stack.Screen name="ride-complete/index" options={{ headerShown: false }} />
     </Stack>
   );
+}
+
+/** Explicit OTA check — default ON_LOAD alone was not reliably applying preview updates. */
+async function checkAndApplyOtaUpdate() {
+  if (__DEV__ || Platform.OS === "web") return;
+  try {
+    const result = await Updates.checkForUpdateAsync();
+    if (!result.isAvailable) return;
+    await Updates.fetchUpdateAsync();
+    await Updates.reloadAsync();
+  } catch (err) {
+    console.warn("[Updates] check/apply failed:", err);
+  }
 }
 
 /** Reads app config from Firebase and gates access before rendering the main app. */
@@ -90,6 +104,10 @@ export default function RootLayout() {
       SplashScreen.hideAsync();
     }
   }, [fontsLoaded, fontError]);
+
+  useEffect(() => {
+    checkAndApplyOtaUpdate();
+  }, []);
 
   // Set up push notification listeners (no-op on web)
   useEffect(() => {
