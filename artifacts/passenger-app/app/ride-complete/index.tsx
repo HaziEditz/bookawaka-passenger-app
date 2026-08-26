@@ -21,6 +21,18 @@ import { useColors } from "@/hooks/useColors";
 const TIPS = [0, 2, 5, 10];
 const FAV_KEY = "@fav_drivers";
 
+function goHome() {
+  try {
+    router.replace("/(tabs)");
+  } catch {
+    try {
+      router.navigate("/(tabs)");
+    } catch {
+      /* last resort — avoid blank screen */
+    }
+  }
+}
+
 export default function RideCompleteScreen() {
   const colors = useColors();
   const { activeRide, completeRide } = useRide();
@@ -32,29 +44,40 @@ export default function RideCompleteScreen() {
   const [comment, setComment] = useState("");
   const [isFav, setIsFav] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [snapshot, setSnapshot] = useState(activeRide);
   const didComplete = useRef(false);
+  const navigatedHome = useRef(false);
+
+  // Keep a local snapshot so clearing activeRide does not blank this screen mid-Done.
+  useEffect(() => {
+    if (activeRide) setSnapshot(activeRide);
+  }, [activeRide]);
 
   useEffect(() => {
-    if (!activeRide && !didComplete.current) {
-      router.replace("/(tabs)");
+    if (!activeRide && !snapshot && !didComplete.current) {
+      navigatedHome.current = true;
+      goHome();
     }
   }, []);
 
-  useEffect(() => {
-    if (didComplete.current && !activeRide) {
-      router.replace("/(tabs)");
-    }
-  }, [activeRide]);
+  const ride = activeRide ?? snapshot;
 
-  if (!activeRide) return null;
+  if (!ride) {
+    return (
+      <View style={[styles.container, styles.center, { backgroundColor: colors.background }]}>
+        <ActivityIndicator color={colors.primary} size="large" />
+        <Text style={[styles.leavingText, { color: colors.mutedForeground }]}>Returning home…</Text>
+      </View>
+    );
+  }
 
-  const { pickup, destination, driver, fare, vehicleType, payment, rideshare, passengerCount } = activeRide;
+  const { pickup, destination, driver, fare, payment, rideshare, passengerCount } = ride;
   const splitFare = rideshare && passengerCount && passengerCount > 1 ? Math.round((fare / passengerCount) * 100) / 100 : null;
   const yourFare = splitFare ?? fare;
   const total = yourFare + tip;
 
   const handleDone = async () => {
-    if (submitting) return;
+    if (submitting || navigatedHome.current) return;
     setSubmitting(true);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
@@ -92,6 +115,9 @@ export default function RideCompleteScreen() {
     try {
       await completeRide(rating, tip);
     } catch {}
+
+    navigatedHome.current = true;
+    goHome();
   };
 
   return (
@@ -114,7 +140,6 @@ export default function RideCompleteScreen() {
           </View>
         )}
 
-        {/* Driver Card */}
         {driver && (
           <View style={[styles.driverCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
             <View style={[styles.driverAvatar, { backgroundColor: colors.primary }]}>
@@ -136,7 +161,6 @@ export default function RideCompleteScreen() {
           <Text style={[styles.favHint, { color: colors.success }]}>Added to Favourite Drivers</Text>
         )}
 
-        {/* Rating */}
         <View style={styles.section}>
           <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>RATE YOUR DRIVER</Text>
           <View style={styles.stars}>
@@ -148,7 +172,6 @@ export default function RideCompleteScreen() {
           </View>
         </View>
 
-        {/* Comment */}
         <View style={[styles.commentBox, { backgroundColor: colors.card, borderColor: colors.border }]}>
           <TextInput
             style={[styles.commentInput, { color: colors.foreground }]}
@@ -161,9 +184,11 @@ export default function RideCompleteScreen() {
           />
         </View>
 
-        {/* Tip */}
         <View style={styles.section}>
           <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>ADD A TIP</Text>
+          <Text style={[styles.tipHint, { color: colors.mutedForeground }]}>
+            Tips are recorded for your driver. Card tip capture may require a follow-up charge.
+          </Text>
           <View style={styles.tipRow}>
             {TIPS.map((t) => (
               <Pressable
@@ -182,7 +207,6 @@ export default function RideCompleteScreen() {
           </View>
         </View>
 
-        {/* Receipt */}
         <View style={[styles.receiptCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
           <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>RECEIPT</Text>
           {splitFare ? (
@@ -219,10 +243,6 @@ export default function RideCompleteScreen() {
               {payment === "card" ? "Card" : payment === "wallet" ? "Wallet" : payment === "cash" ? "Cash" : "Account"}
             </Text>
           </View>
-          <View style={[styles.receiptEmailRow, { borderColor: colors.border }]}>
-            <Feather name="mail" size={14} color={colors.mutedForeground} />
-            <Text style={[styles.receiptEmailText, { color: colors.mutedForeground }]}>Receipt will be emailed to your registered email</Text>
-          </View>
         </View>
       </ScrollView>
 
@@ -244,6 +264,8 @@ export default function RideCompleteScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  center: { alignItems: "center", justifyContent: "center", gap: 12 },
+  leavingText: { fontSize: 14, fontFamily: "Inter_500Medium" },
   content: { paddingHorizontal: 24, gap: 20, alignItems: "center" },
   successIcon: { width: 100, height: 100, borderRadius: 50, alignItems: "center", justifyContent: "center" },
   title: { fontSize: 26, fontFamily: "Inter_700Bold", textAlign: "center" },
@@ -259,6 +281,7 @@ const styles = StyleSheet.create({
   favHint: { fontSize: 12, fontFamily: "Inter_500Medium", alignSelf: "flex-start" },
   section: { gap: 10, width: "100%", alignItems: "center" },
   sectionLabel: { fontSize: 11, fontFamily: "Inter_600SemiBold", letterSpacing: 1, alignSelf: "flex-start" },
+  tipHint: { fontSize: 12, fontFamily: "Inter_400Regular", alignSelf: "flex-start", lineHeight: 16 },
   stars: { flexDirection: "row", gap: 8 },
   commentBox: { width: "100%", borderRadius: 12, borderWidth: 1, padding: 14 },
   commentInput: { fontSize: 14, fontFamily: "Inter_400Regular", minHeight: 70 },
@@ -272,8 +295,6 @@ const styles = StyleSheet.create({
   receiptDivider: { height: 1 },
   receiptTotal: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
   receiptTotalValue: { fontSize: 20, fontFamily: "Inter_700Bold" },
-  receiptEmailRow: { flexDirection: "row", alignItems: "center", gap: 6, borderTopWidth: 1, paddingTop: 10, marginTop: 4 },
-  receiptEmailText: { fontSize: 12, fontFamily: "Inter_400Regular", flex: 1 },
   bottomBar: { padding: 20, borderTopWidth: 1 },
   doneBtn: { borderRadius: 14, paddingVertical: 16, alignItems: "center", width: "100%" },
   doneBtnText: { color: "#fff", fontSize: 16, fontFamily: "Inter_600SemiBold" },

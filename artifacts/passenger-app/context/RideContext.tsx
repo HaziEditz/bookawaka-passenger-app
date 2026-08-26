@@ -11,6 +11,7 @@ import {
   update as rtdbUpdate,
   onValue as rtdbOnValue,
   off as rtdbOff,
+  get as rtdbGet,
 } from "firebase/database";
 import { auth, db, rtdb } from "@/lib/firebase";
 import { registerForPushNotificationsAsync } from "@/lib/pushNotifications";
@@ -116,6 +117,8 @@ export interface ActiveRide {
   // Gift Card payment
   giftCardCode?: string;
   giftCardId?: string;
+  /** Optional note for the driver / dispatcher (pickup instructions). */
+  pickupNote?: string;
   // Cancellation policy tracking
   acceptedAt?: number;                  // timestamp (ms) when driver was first confirmed
   driverStartDistanceToPickup?: number; // km from driver's position at acceptance to pickup
@@ -209,6 +212,8 @@ interface RideContextType {
   abortRide: () => void;
   addStop: (stop: Stop) => void;
   completeRide: (rating: number, tip: number) => Promise<void>;
+  /** Clear local ride without writing completion (Skip on complete modal). */
+  clearRide: () => void;
   setRideStatus: (status: RideStatus) => void;
 }
 
@@ -683,7 +688,7 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
           lng: params.destination.location.longitude,
         },
         tariffId: params.vehicleType,
-        notes: "",
+        notes: params.pickupNote ?? "",
       },
       onRetry,
     );
@@ -843,6 +848,15 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       estimatedFare: params.fare,
       PaymentMethod: params.payment,
       paymentMethod: params.payment,
+      ...(params.pickupNote && params.pickupNote.trim()
+        ? {
+            Notes: params.pickupNote.trim(),
+            notes: params.pickupNote.trim(),
+            Info: params.pickupNote.trim(),
+            PickupNote: params.pickupNote.trim(),
+            pickupNote: params.pickupNote.trim(),
+          }
+        : {}),
       // Card + known fare/dropoff → Fixed (no live meter), matching website bookings.ts.
       ...(params.payment === "card" && typeof params.fare === "number" && params.fare > 0
         ? {
@@ -1053,24 +1067,34 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       });
 
       // ── Driver assigned by dispatcher ────────────────────────────────────
-      // Accept any driver identifier — name OR id — as a signal that a driver was assigned
-      const driverName = String(
+      // Prefer a real display name; fall back to driver id only if nothing else.
+      const driverDisplayName = String(
         d.DriverName ?? d.driverName ?? d.drivername ??
-        d.DriverId   ?? d.driverId   ?? d.driverid   ?? ""
+        d.AssignedDriverName ?? d.assignedDriverName ??
+        d.DriverFullName ?? d.driverFullName ?? ""
       ).trim();
+      const driverIdOnly = String(
+        d.DriverId ?? d.driverId ?? d.driverid ?? ""
+      ).trim();
+      const driverName = driverDisplayName || driverIdOnly;
       const vehicleLabel = String(
         d.VehicleId ?? d.vehicleId ?? d.vehicleid ??
         d.VehicleNo ?? d.vehicleNo ?? d.vehicleno ??
-        d.VehicleNumber ?? d.vehicleNumber ?? d.vehiclenumber ?? "Vehicle"
+        d.VehicleNumber ?? d.vehicleNumber ?? d.vehiclenumber ??
+        d.TaxiNumber ?? d.taxiNumber ?? "Vehicle"
       ).trim();
+      const plateLabel = String(
+        d.Plate ?? d.plate ?? d.Registration ?? d.registration ??
+        d.Rego ?? d.rego ?? "—"
+      ).trim() || "—";
 
       if (driverName) {
         // Start live GPS listener: online/{cid}/{vehicleId}/current → {lat, lng}
-        // The dispatcher writes the driver's GPS here; lat/lng are fields of the `current` node.
         const rawVehicleId = String(
           d.VehicleId ?? d.vehicleId ?? d.vehicleid ??
           d.VehicleNo ?? d.vehicleNo ?? d.vehicleno ??
-          d.VehicleNumber ?? d.vehicleNumber ?? d.vehiclenumber ?? ""
+          d.VehicleNumber ?? d.vehicleNumber ?? d.vehiclenumber ??
+          d.TaxiNumber ?? d.taxiNumber ?? ""
         ).trim();
         if (rawVehicleId && rawVehicleId !== "Vehicle") {
           if (gpsListenerRef.current) rtdbOff(gpsListenerRef.current);
@@ -1083,17 +1107,39 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
             }
           });
           gpsListenerRef.current = gpsPath;
+
+          // Enrich plate / vehicle label from fleet record when dispatch omitted them
+          rtdbGet(rtdbRef(rtdb, `vehicles/${companyId}/${rawVehicleId}`)).then((vehSnap) => {
+            if (!vehSnap.exists()) return;
+            const v = vehSnap.val() as Record<string, unknown>;
+            const rego = String(v.registration ?? v.Registration ?? v.rego ?? v.plate ?? "").trim();
+            const makeModel = [v.make, v.model].filter(Boolean).join(" ").trim();
+            const color = String(v.color ?? v.Colour ?? "").trim();
+            setActiveRide((prev) => {
+              if (!prev?.driver) return prev;
+              return {
+                ...prev,
+                driver: {
+                  ...prev.driver,
+                  plate: rego || prev.driver.plate,
+                  cab: makeModel || prev.driver.cab || rawVehicleId,
+                  color: color || prev.driver.color,
+                },
+              };
+            });
+          }).catch(() => {});
         }
 
         setActiveRide((prev) => {
-          if (!prev || (prev.driver && prev.driver.name === driverName)) return prev;
+          if (!prev || (prev.driver && prev.driver.name === driverName && prev.driver.cab === vehicleLabel)) return prev;
           const driverLat = Number(d.DriverLat ?? d.driverLat ?? d.driverlat ?? 0);
           const driverLng = Number(d.DriverLng ?? d.driverLng ?? d.driverlng ?? 0);
           const loc: LatLng = driverLat && driverLng
             ? { latitude: driverLat, longitude: driverLng }
             : params.pickup.location;
           const startDist = haversineKm(loc, params.pickup.location);
-          notify("Driver Found!", `Driver ${driverName} has been assigned to your ride.`, "success");
+          const niceName = driverDisplayName || `Driver ${driverIdOnly}`;
+          notify("Driver Found!", `${niceName} has been assigned to your ride.`, "success");
           stopMockDriverTimer();
           stopSimulation();
           dispatchOverrideRef.current = true;
@@ -1101,7 +1147,7 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
             ...prev,
             status: "confirmed",
             searchPhase: undefined,
-            driver: { name: driverName, rating: 4.8, cab: vehicleLabel, plate: "—", color: "", location: loc },
+            driver: { name: niceName, rating: 4.8, cab: vehicleLabel, plate: plateLabel, color: "", location: loc },
             acceptedAt: prev.acceptedAt ?? Date.now(),
             driverStartDistanceToPickup: prev.driverStartDistanceToPickup ?? (startDist > 0.01 ? startDist : 1),
           };
@@ -1374,45 +1420,7 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
     notify("Stop Added", `${stop.place.address.split(",")[0]} — fare updated`, "info");
   };
 
-  const completeRide = async (rating: number, tip: number) => {
-    if (activeRide?.firestoreId && activeRide?.companyId) {
-      const finalFare = activeRide.fare + tip;
-      await updateFirestoreStatus(activeRide.companyId, activeRide.firestoreId, "completed", {
-        finalFare,
-        paymentStatus: "confirmed",
-      });
-
-      // Write passenger's star rating to shared paths so driver app + SA portal can read it
-      if (rating > 0) {
-        const cid = activeRide.companyId;
-        const jobId = activeRide.firestoreId;
-        const passengerId = auth.currentUser?.uid ?? "guest";
-        const ratedAt = new Date().toISOString();
-
-        // Patch the booking record — Firestore
-        updateDoc(doc(db, "allbookings", cid, "rides", jobId), {
-          passengerRating: rating,
-          passengerRatedAt: ratedAt,
-        }).catch(() => {});
-
-        // Universal rating path — both driver app and SA portal read this (RTDB)
-        // Uses update() so we never overwrite a driverRating the driver app may have set
-        rtdbUpdate(rtdbRef(rtdb, `driverRatings/${cid}/${jobId}`), {
-          passengerRating: rating,
-          passengerRatedAt: ratedAt,
-          passengerId,
-          driverName: activeRide.driver?.name ?? null,
-          bookingId: jobId,
-          companyId: cid,
-        }).catch(() => {});
-
-        // Also patch RTDB booking record for anything reading allbookings
-        rtdbUpdate(rtdbRef(rtdb, `allbookings/${cid}/${jobId}`), {
-          passengerRating: rating,
-          passengerRatedAt: ratedAt,
-        }).catch(() => {});
-      }
-    }
+  const clearRide = () => {
     stopMockDriverTimer();
     stopSimulation();
     stopFirestoreListener();
@@ -1421,6 +1429,56 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
     setActiveRide(null);
     setDriverLocation(null);
     dispatchOverrideRef.current = false;
+  };
+
+  const completeRide = async (rating: number, tip: number) => {
+    try {
+      if (activeRide?.firestoreId && activeRide?.companyId) {
+        const finalFare = activeRide.fare + tip;
+        await updateFirestoreStatus(activeRide.companyId, activeRide.firestoreId, "completed", {
+          finalFare,
+          tip,
+          paymentStatus: "confirmed",
+        });
+
+        // Write passenger's star rating to shared paths so driver app + SA portal can read it
+        if (rating > 0) {
+          const cid = activeRide.companyId;
+          const jobId = activeRide.firestoreId;
+          const passengerId = auth.currentUser?.uid ?? "guest";
+          const ratedAt = new Date().toISOString();
+
+          updateDoc(doc(db, "allbookings", cid, "rides", jobId), {
+            passengerRating: rating,
+            passengerRatedAt: ratedAt,
+            tip,
+          }).catch(() => {});
+
+          rtdbUpdate(rtdbRef(rtdb, `driverRatings/${cid}/${jobId}`), {
+            passengerRating: rating,
+            passengerRatedAt: ratedAt,
+            passengerId,
+            tip,
+            driverName: activeRide.driver?.name ?? null,
+            bookingId: jobId,
+            companyId: cid,
+          }).catch(() => {});
+
+          rtdbUpdate(rtdbRef(rtdb, `allbookings/${cid}/${jobId}`), {
+            passengerRating: rating,
+            passengerRatedAt: ratedAt,
+            tip,
+            Tip: tip,
+          }).catch(() => {});
+        }
+      }
+    } catch (e) {
+      console.warn("[Ride] completeRide write failed:", e);
+    } finally {
+      // ALWAYS clear — leaving activeRide set, or ride-complete returning null without
+      // navigation, is what left Ad on a permanent blank screen after one trip.
+      clearRide();
+    }
   };
 
   const setRideStatus = (status: RideStatus) => {
@@ -1448,7 +1506,7 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
 
   return (
     <RideContext.Provider
-      value={{ activeRide, driverLocation, startRide, cancelRide, abortRide, addStop, completeRide, setRideStatus }}
+      value={{ activeRide, driverLocation, startRide, cancelRide, abortRide, addStop, completeRide, clearRide, setRideStatus }}
     >
       {children}
     </RideContext.Provider>

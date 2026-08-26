@@ -56,6 +56,10 @@ export function PlacesAutocomplete({ placeholder, value, onSelect, icon = "map-p
     if (detail) {
       setText(detail.address);
       onSelect(detail);
+    } else {
+      // Keep the typed address visible and surface failure — silent null looked like "address doesn't work"
+      setText(s.description);
+      console.warn("[Places] geocodePlace failed for", s.placeId);
     }
   };
 
@@ -73,7 +77,7 @@ export function PlacesAutocomplete({ placeholder, value, onSelect, icon = "map-p
           value={text}
           onChangeText={handleChange}
           onFocus={() => setFocused(true)}
-          onBlur={() => setTimeout(() => { setFocused(false); setSuggestions([]); }, 400)}
+          onBlur={() => setTimeout(() => { setFocused(false); setSuggestions([]); }, 800)}
           autoFocus={autoFocus}
           returnKeyType="search"
         />
@@ -91,7 +95,7 @@ export function PlacesAutocomplete({ placeholder, value, onSelect, icon = "map-p
           {suggestions.map((item, index) => (
             <Pressable
               key={item.placeId}
-              onPress={() => handleSelect(item)}
+              onPressIn={() => handleSelect(item)}
               style={({ pressed }) => [
                 styles.suggestion,
                 {

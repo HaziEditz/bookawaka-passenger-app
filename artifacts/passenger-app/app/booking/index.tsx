@@ -75,6 +75,7 @@ export default function BookingScreen() {
   const [useWalletCredit, setUseWalletCredit] = useState(false);
   const [rideshare, setRideshare] = useState(false);
   const [passengerCount, setPassengerCount] = useState(2);
+  const [pickupNote, setPickupNote] = useState("");
   const [locating, setLocating] = useState(false);
   const [locationError, setLocationError] = useState<string | null>(null);
 
@@ -764,6 +765,7 @@ export default function BookingScreen() {
           // Gift Card fields
           giftCardCode: resolvedGiftCard?.code,
           giftCardId: resolvedGiftCard?.id,
+          pickupNote: pickupNote.trim() || undefined,
         },
         (attempt, total) => {
           setBookingStatus(`Connecting… (retry ${attempt - 1}/${total - 1})`);
@@ -1372,6 +1374,19 @@ export default function BookingScreen() {
                 <View style={[styles.confirmDot, { backgroundColor: colors.destructive }]} />
                 <Text style={[styles.confirmText, { color: colors.foreground }]} numberOfLines={2}>{destination.address}</Text>
               </View>
+            </View>
+
+            <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>PICKUP NOTE (OPTIONAL)</Text>
+            <View style={[styles.fareCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+              <TextInput
+                style={{ fontSize: 14, fontFamily: "Inter_400Regular", color: colors.foreground, minHeight: 64, textAlignVertical: "top" }}
+                placeholder="e.g. Gate B, blue door, call on arrival…"
+                placeholderTextColor={colors.mutedForeground}
+                value={pickupNote}
+                onChangeText={setPickupNote}
+                multiline
+                maxLength={200}
+              />
             </View>
 
             {/* Fare Breakdown */}

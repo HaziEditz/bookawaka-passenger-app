@@ -71,7 +71,7 @@ function searchLabel(phase: SearchPhase | undefined, elapsed: string): string {
 export default function ActiveRideScreen() {
   const colors = useColors();
   const { notify } = useNotification();
-  const { activeRide, driverLocation, cancelRide, addStop, setRideStatus } = useRide();
+  const { activeRide, driverLocation, cancelRide, addStop, setRideStatus, clearRide } = useRide();
   const insets = useSafeAreaInsets();
   const elapsed = useElapsedTime(activeRide?.status === "searching");
   const [chatOpen, setChatOpen] = useState(false);
@@ -141,7 +141,11 @@ export default function ActiveRideScreen() {
   }, [activeRide?.status, activeRide?.payment, activeRide?.fare, activeRide?.acceptedAt, activeRide?.isTM, activeRide?.tmPassengerAmount, driverDistancePct, now]);
 
   if (!activeRide) {
-    return null;
+    return (
+      <View style={[styles.container, { backgroundColor: colors.background, alignItems: "center", justifyContent: "center" }]}>
+        <Text style={{ color: colors.mutedForeground, fontFamily: "Inter_500Medium" }}>Returning home…</Text>
+      </View>
+    );
   }
 
   const { pickup, destination, driver, status, fare, vehicleType, stops, searchPhase } = activeRide;
@@ -305,8 +309,27 @@ export default function ActiveRideScreen() {
           </View>
         </View>
 
+        {/* Trip started — clear indication when driver marks On Board */}
+        {status === "in_progress" && (
+          <View style={[styles.bookingReceivedBanner, { backgroundColor: "#1e40af18", borderColor: "#1e40af40" }]}>
+            <View style={styles.bookingReceivedTop}>
+              <View style={[styles.bookingReceivedIcon, { backgroundColor: "#1e40af20" }]}>
+                <Feather name="navigation" size={18} color="#1e40af" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.bookingReceivedTitle, { color: "#1e3a5f" }]}>
+                  Trip in progress
+                </Text>
+                <Text style={[styles.bookingReceivedBody, { color: "#374151" }]}>
+                  You&apos;re on board — heading to your destination.
+                </Text>
+              </View>
+            </View>
+          </View>
+        )}
+
         {/* Driver Card */}
-        {driver && (
+        {driver ? (
           <View style={[styles.driverCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
             <View style={[styles.driverAvatar, { backgroundColor: colors.primary }]}>
               <Feather name="user" size={22} color="#fff" />
@@ -325,7 +348,19 @@ export default function ActiveRideScreen() {
               <Feather name="message-circle" size={18} color={colors.primary} />
             </Pressable>
           </View>
-        )}
+        ) : status !== "searching" ? (
+          <View style={[styles.driverCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <View style={[styles.driverAvatar, { backgroundColor: colors.muted }]}>
+              <Feather name="user" size={22} color={colors.mutedForeground} />
+            </View>
+            <View style={styles.driverInfo}>
+              <Text style={[styles.driverName, { color: colors.foreground }]}>Driver assigned</Text>
+              <Text style={[styles.driverMetaText, { color: colors.mutedForeground }]}>
+                Vehicle details will appear when the dispatcher shares them.
+              </Text>
+            </View>
+          </View>
+        ) : null}
 
         {/* Fare + ETA + Payment Status */}
         <View style={[styles.infoCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
@@ -595,7 +630,11 @@ export default function ActiveRideScreen() {
                 <Text style={[styles.confirmBtnText, { color: "#fff" }]}>Rate My Driver</Text>
               </Pressable>
               <Pressable
-                onPress={() => { setShowCompleteModal(false); router.replace("/(tabs)"); }}
+                onPress={() => {
+                  setShowCompleteModal(false);
+                  clearRide();
+                  router.replace("/(tabs)");
+                }}
                 style={[styles.confirmBtn, { backgroundColor: colors.muted, width: "100%" }]}
               >
                 <Text style={[styles.confirmBtnText, { color: colors.foreground }]}>Skip — Back to Home</Text>
