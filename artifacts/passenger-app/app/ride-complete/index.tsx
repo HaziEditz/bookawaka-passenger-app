@@ -81,43 +81,56 @@ export default function RideCompleteScreen() {
     setSubmitting(true);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
-    if (isFav && driver) {
-      try {
-        const raw = await AsyncStorage.getItem(FAV_KEY);
-        const favs = raw ? JSON.parse(raw) : [];
-        const alreadyFav = favs.some((f: any) => f.name === driver.name);
-        if (!alreadyFav) {
-          favs.push({ name: driver.name, cab: driver.cab, plate: driver.plate, rating: driver.rating });
-          await AsyncStorage.setItem(FAV_KEY, JSON.stringify(favs));
-        }
-      } catch {}
-    }
-
-    try {
-      await addToHistory({
-        serviceType: "taxi",
-        status: "completed",
-        from: pickup.address,
-        to: destination.address,
-        price: total,
-        paymentMethod:
-          payment === "wallet" ? "wallet"
-          : payment === "cash" ? "cash"
-          : payment === "account" || payment === "business_account" || payment === "acc" ? "account"
-          : payment === "gift_card" ? "gift_card"
-          : "card",
-        driverName: driver?.name,
-        driverRating: rating,
-      });
-    } catch {}
-
-    didComplete.current = true;
-    try {
-      await completeRide(rating, tip);
-    } catch {}
-
+    // Navigate home immediately — never leave the passenger stuck on a spinner
+    // if Firestore / history writes hang.
     navigatedHome.current = true;
+    didComplete.current = true;
     goHome();
+
+    const withTimeout = <T,>(p: Promise<T>, ms: number): Promise<T | void> =>
+      Promise.race([
+        p,
+        new Promise<void>((resolve) => setTimeout(resolve, ms)),
+      ]);
+
+    void (async () => {
+      if (isFav && driver) {
+        try {
+          const raw = await AsyncStorage.getItem(FAV_KEY);
+          const favs = raw ? JSON.parse(raw) : [];
+          const alreadyFav = favs.some((f: any) => f.name === driver.name);
+          if (!alreadyFav) {
+            favs.push({ name: driver.name, cab: driver.cab, plate: driver.plate, rating: driver.rating });
+            await AsyncStorage.setItem(FAV_KEY, JSON.stringify(favs));
+          }
+        } catch {}
+      }
+
+      try {
+        await withTimeout(
+          addToHistory({
+            serviceType: "taxi",
+            status: "completed",
+            from: pickup.address,
+            to: destination.address,
+            price: total,
+            paymentMethod:
+              payment === "wallet" ? "wallet"
+              : payment === "cash" ? "cash"
+              : payment === "account" || payment === "business_account" || payment === "acc" ? "account"
+              : payment === "gift_card" ? "gift_card"
+              : "card",
+            driverName: driver?.name,
+            driverRating: rating,
+          }),
+          4000,
+        );
+      } catch {}
+
+      try {
+        await withTimeout(completeRide(rating, tip), 4000);
+      } catch {}
+    })();
   };
 
   return (

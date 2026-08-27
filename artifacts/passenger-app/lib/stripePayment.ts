@@ -90,7 +90,20 @@ export async function openStripeCheckout(params: StripeCheckoutParams): Promise<
     // Match the HTTPS return path prefix so Custom Tabs dismiss into the app
     // instead of trying to render passenger-app:// as a website.
     const redirectUrl = `${returnHost}/passenger-app-return`;
-    await WebBrowser.openAuthSessionAsync(url, redirectUrl);
+    const AUTH_SESSION_TIMEOUT_MS = 6 * 60 * 1000;
+    let timedOut = false;
+    const timeoutId = setTimeout(() => {
+      timedOut = true;
+      void WebBrowser.dismissBrowser().catch(() => undefined);
+    }, AUTH_SESSION_TIMEOUT_MS);
+    try {
+      await WebBrowser.openAuthSessionAsync(url, redirectUrl);
+    } finally {
+      clearTimeout(timeoutId);
+    }
+    if (timedOut) {
+      console.warn("[stripePayment] AuthSession dismissed after timeout — continuing verify path");
+    }
   }
 
   return { sessionId, url };

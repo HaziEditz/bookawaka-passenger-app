@@ -43,13 +43,45 @@ async function rtdbPatch(path: string, data: unknown, idToken: string): Promise<
   }
 }
 
+/** Allow HTTPS return URLs on BookaWaka hosts (or localhost for dev). */
+function isAllowedCheckoutReturnUrl(raw: unknown): raw is string {
+  if (typeof raw !== "string" || !raw.trim()) return false;
+  try {
+    const u = new URL(raw);
+    const host = u.hostname.toLowerCase();
+    if (u.protocol === "http:" && (host === "localhost" || host === "127.0.0.1")) return true;
+    if (u.protocol !== "https:") return false;
+    return (
+      host === "localhost" ||
+      host.endsWith(".up.railway.app") ||
+      host.endsWith(".replit.app") ||
+      host.endsWith(".replit.dev") ||
+      host === "bookawaka.com" ||
+      host.endsWith(".bookawaka.com") ||
+      host.includes("bookawaka")
+    );
+  } catch {
+    return false;
+  }
+}
+
 router.post("/stripe/create-booking-payment", async (req, res) => {
   if (!STRIPE_SECRET_KEY) {
     res.status(503).json({ error: "Card payments are not configured yet. Please use cash or wallet." });
     return;
   }
 
-  const { cid, bookingId, description, amount, currency = "nzd", email, walletAmountPending } = req.body;
+  const {
+    cid,
+    bookingId,
+    description,
+    amount,
+    currency = "nzd",
+    email,
+    walletAmountPending,
+    successUrl: clientSuccessUrl,
+    cancelUrl: clientCancelUrl,
+  } = req.body;
 
   if (!bookingId || !amount || !description) {
     res.status(400).json({ error: "bookingId, amount, and description are required" });
@@ -68,6 +100,15 @@ router.post("/stripe/create-booking-payment", async (req, res) => {
       ? `https://${replit_domains[0]}`
       : `http://localhost:${process.env["PORT"] ?? 8080}`;
 
+    // Prefer client AuthSession return URLs so the Custom Tab dismisses into the app.
+    // Fall back to API-hosted return pages (not bare /?payment=…) when client omits them.
+    const success_url = isAllowedCheckoutReturnUrl(clientSuccessUrl)
+      ? clientSuccessUrl
+      : `${baseUrl}/passenger-app-return?booking=${encodeURIComponent(bookingId)}&cid=${encodeURIComponent(String(cid ?? ""))}&session_id={CHECKOUT_SESSION_ID}`;
+    const cancel_url = isAllowedCheckoutReturnUrl(clientCancelUrl)
+      ? clientCancelUrl
+      : `${baseUrl}/passenger-app-cancel?booking=${encodeURIComponent(bookingId)}&cid=${encodeURIComponent(String(cid ?? ""))}`;
+
     const payload: Record<string, any> = {
       "payment_method_types[]": "card",
       "line_items[0][price_data][currency]": currency,
@@ -75,8 +116,8 @@ router.post("/stripe/create-booking-payment", async (req, res) => {
       "line_items[0][price_data][unit_amount]": amountInCents,
       "line_items[0][quantity]": 1,
       mode: "payment",
-      success_url: `${baseUrl}/?payment=success&booking=${bookingId}`,
-      cancel_url: `${baseUrl}/?payment=cancelled&booking=${bookingId}`,
+      success_url,
+      cancel_url,
       "metadata[bookingId]": bookingId,
       "metadata[companyId]": cid ?? "",
       "metadata[type]": "booking_payment",

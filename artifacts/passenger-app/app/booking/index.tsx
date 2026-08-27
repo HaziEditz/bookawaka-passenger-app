@@ -23,6 +23,7 @@ import { TMCardScanner } from "@/components/TMCardScanner";
 import { Company, VehicleType, VEHICLES, VEHICLE_CAPACITY, VEHICLE_LABELS } from "@/constants/companies";
 import { useCompanies, getVehicleTariff, isLoadTestCompanyId } from "@/context/CompaniesContext";
 import { useAuth } from "@/context/AuthContext";
+import { useNotification } from "@/context/NotificationContext";
 import { useRide, Stop, PaymentMethodRide, TMPassenger } from "@/context/RideContext";
 import { ref, onValue, get, set, update } from "firebase/database";
 import { rtdb } from "@/lib/firebase";
@@ -47,6 +48,7 @@ export default function BookingScreen() {
   const colors = useColors();
   const { user, firebaseUser, updateWallet } = useAuth();
   const { startRide, abortRide } = useRide();
+  const { notify } = useNotification();
   const { settings: tmSettings } = useTMSettings();
   const { platformCashEnabled } = useAppConfig();
   const insets = useSafeAreaInsets();
@@ -858,6 +860,9 @@ export default function BookingScreen() {
           if (walletContribution > 0) {
             updateWallet(-walletContribution).catch(() => {});
           }
+        }
+        if (!scheduledAt) {
+          notify("Searching for driver...", "Looking for the nearest driver for you.", "info");
         }
       } else if (payment === "wallet") {
         // Pure wallet payment — deduct the full fare immediately from the wallet

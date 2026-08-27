@@ -20,6 +20,7 @@ import { LatLng, PlaceDetail } from "@/lib/googlePlaces";
 import { RouteResult } from "@/lib/directions";
 import { calculateFare, formatCurrency } from "@/lib/fareCalculator";
 import { useNotification } from "./NotificationContext";
+import { alertPassengerDriverArrived } from "@/lib/arrivalAlert";
 import { createJobId } from "@/lib/jobApi";
 import { useAuth } from "@/context/AuthContext";
 import {
@@ -512,7 +513,10 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
 
           if (t >= 1) {
             progressRef.current = 0;  // reset for the in_progress leg
-            setTimeout(() => notify("Driver Arrived", `${prev.driver?.name} is waiting at your pickup.`, "success"), 0);
+            setTimeout(() => {
+              notify("Driver Arrived", `${prev.driver?.name} is waiting at your pickup.`, "success");
+              void alertPassengerDriverArrived();
+            }, 0);
             // Simulation is display-only — do NOT write status to Firestore/RTDB.
             // Backend/dispatcher owns all status transitions.
             return { ...prev, status: "arrived" };
@@ -681,7 +685,7 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
         companyId: params.companyId,
         passenger: {
           name: fbUser?.displayName ?? "Passenger",
-          phone: fbUser?.phoneNumber ?? "",
+          phone: authUser?.phone || fbUser?.phoneNumber || "",
         },
         pickup: {
           address: params.pickup.address,
@@ -718,12 +722,16 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
     };
     if (!params.scheduledAt) {
       setActiveRide(ride);
-      notify("Searching for driver...", "Looking for the nearest driver for you.", "info");
+      // Card holds: don't claim "searching" until Stripe confirms — payment can still fail.
+      if (params.payment !== "card") {
+        notify("Searching for driver...", "Looking for the nearest driver for you.", "info");
+      }
     } else {
       notify("Ride Scheduled!", "Your booking is saved — we'll dispatch before your pickup time.", "success");
     }
 
-    const passengerPhone = fbUser?.phoneNumber ?? "";
+    const passengerPhone =
+      String(authUser?.phone || fbUser?.phoneNumber || "").trim();
 
     const bookingData: BookingFirestore = {
       // Core identity fields
@@ -834,8 +842,9 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       // Passenger
       PassengerName: authUser?.name ?? fbUser?.displayName ?? "Passenger",
       passengerName: authUser?.name ?? fbUser?.displayName ?? "Passenger",
-      PhoneNo: fbUser?.phoneNumber ?? "",
-      phone: fbUser?.phoneNumber ?? "",
+      PhoneNo: passengerPhone,
+      phone: passengerPhone,
+      passengerPhone,
       passengerId: passengerUid,
       // Pickup
       PickupAddress: params.pickup.address,
@@ -1293,7 +1302,12 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
             if (!prev || prev.status === mapped) return prev;
             // Fire notification on the transition (setTimeout keeps setState pure)
             const n = STATUS_NOTIFY[mapped];
-            if (n) setTimeout(() => notify(n[0], n[1], n[2]), 0);
+            if (n) {
+              setTimeout(() => {
+                notify(n[0], n[1], n[2]);
+                if (mapped === "arrived") void alertPassengerDriverArrived();
+              }, 0);
+            }
             return { ...prev, status: mapped };
           });
         }
