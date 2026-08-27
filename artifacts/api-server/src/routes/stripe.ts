@@ -104,10 +104,10 @@ router.post("/stripe/create-booking-payment", async (req, res) => {
     // Fall back to API-hosted return pages (not bare /?payment=…) when client omits them.
     const success_url = isAllowedCheckoutReturnUrl(clientSuccessUrl)
       ? clientSuccessUrl
-      : `${baseUrl}/passenger-app-return?booking=${encodeURIComponent(bookingId)}&cid=${encodeURIComponent(String(cid ?? ""))}&session_id={CHECKOUT_SESSION_ID}`;
+      : `${baseUrl}/api/passenger-app-return?booking=${encodeURIComponent(bookingId)}&cid=${encodeURIComponent(String(cid ?? ""))}&session_id={CHECKOUT_SESSION_ID}`;
     const cancel_url = isAllowedCheckoutReturnUrl(clientCancelUrl)
       ? clientCancelUrl
-      : `${baseUrl}/passenger-app-cancel?booking=${encodeURIComponent(bookingId)}&cid=${encodeURIComponent(String(cid ?? ""))}`;
+      : `${baseUrl}/api/passenger-app-cancel?booking=${encodeURIComponent(bookingId)}&cid=${encodeURIComponent(String(cid ?? ""))}`;
 
     const payload: Record<string, any> = {
       "payment_method_types[]": "card",

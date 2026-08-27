@@ -33,6 +33,9 @@ app.use(express.urlencoded({ extended: true }));
  * Stripe Checkout return pages for the native passenger app.
  * AuthSession watches these HTTPS prefixes; the page auto-closes / tells the user
  * to return to the app so the Custom Tab dismisses instead of hanging forever.
+ *
+ * Served under /api/… because production routes the Express API there; bare
+ * /passenger-app-return is intercepted by the public website SPA.
  */
 function passengerAppReturnHtml(kind: "success" | "cancel"): string {
   const title = kind === "success" ? "Payment complete" : "Payment cancelled";
@@ -65,6 +68,12 @@ app.get("/passenger-app-return", (_req, res) => {
   res.status(200).type("html").send(passengerAppReturnHtml("success"));
 });
 app.get("/passenger-app-cancel", (_req, res) => {
+  res.status(200).type("html").send(passengerAppReturnHtml("cancel"));
+});
+app.get("/api/passenger-app-return", (_req, res) => {
+  res.status(200).type("html").send(passengerAppReturnHtml("success"));
+});
+app.get("/api/passenger-app-cancel", (_req, res) => {
   res.status(200).type("html").send(passengerAppReturnHtml("cancel"));
 });
 

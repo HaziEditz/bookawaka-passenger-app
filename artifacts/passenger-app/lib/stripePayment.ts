@@ -40,11 +40,12 @@ export async function openStripeCheckout(params: StripeCheckoutParams): Promise<
 
   const useAppReturn = Platform.OS !== "web";
   const returnHost = base || "https://bookawaka-production.up.railway.app";
+  // Must be under /api/… — bare /passenger-app-return hits the public website SPA on this host.
   const successUrl = useAppReturn
-    ? `${returnHost}/passenger-app-return?booking=${encodeURIComponent(params.bookingId)}&cid=${encodeURIComponent(params.cid)}&session_id={CHECKOUT_SESSION_ID}`
+    ? `${returnHost}/api/passenger-app-return?booking=${encodeURIComponent(params.bookingId)}&cid=${encodeURIComponent(params.cid)}&session_id={CHECKOUT_SESSION_ID}`
     : undefined;
   const cancelUrl = useAppReturn
-    ? `${returnHost}/passenger-app-cancel?booking=${encodeURIComponent(params.bookingId)}&cid=${encodeURIComponent(params.cid)}`
+    ? `${returnHost}/api/passenger-app-cancel?booking=${encodeURIComponent(params.bookingId)}&cid=${encodeURIComponent(params.cid)}`
     : undefined;
 
   let res: Response;
@@ -89,7 +90,7 @@ export async function openStripeCheckout(params: StripeCheckoutParams): Promise<
   } else {
     // Match the HTTPS return path prefix so Custom Tabs dismiss into the app
     // instead of trying to render passenger-app:// as a website.
-    const redirectUrl = `${returnHost}/passenger-app-return`;
+    const redirectUrl = `${returnHost}/api/passenger-app-return`;
     const AUTH_SESSION_TIMEOUT_MS = 6 * 60 * 1000;
     let timedOut = false;
     const timeoutId = setTimeout(() => {
