@@ -44,12 +44,20 @@ test('profile top-up form is disabled with honest copy', () => {
   assert.match(src, /Top-up is temporarily unavailable/);
 });
 
-test('stripe AuthSession result is handled (cancel throws)', () => {
+test('AuthSession dismiss continues verify (does not throw cancel)', () => {
   const src = load('lib/stripePayment.ts');
-  assert.match(src, /StripeCheckoutCancelledError/);
-  assert.match(src, /openAuthSessionAsync/);
-  assert.match(src, /result\.type === "success"/);
-  assert.match(src, /dismissBrowser/);
+  assert.match(src, /continuing verify path \(session may already be paid\)/);
+  assert.doesNotMatch(
+    src,
+    /result\.type === "cancel" \|\| result\.type === "dismiss"\) \{\s*[\s\S]*?throw new StripeCheckoutCancelledError/,
+  );
+});
+
+test('stripe-return deep-link route exists and redirects to active-ride', () => {
+  const src = load('app/stripe-return.tsx');
+  assert.match(src, /Redirect href="\/active-ride"/);
+  const layout = load('app/_layout.tsx');
+  assert.match(layout, /stripe-return/);
 });
 
 test('completeRide clears activeRide before async writes', () => {

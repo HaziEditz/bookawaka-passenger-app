@@ -40,6 +40,12 @@ export class StripeCheckoutCancelledError extends Error {
  * Native return URLs must be HTTPS on our allowlisted host (not passenger-app://).
  * Stripe → custom-scheme redirects show Chrome "site can't be reached" when the
  * Custom Tab fails to hand off the scheme; AuthSession completes cleanly on HTTPS.
+ *
+ * IMPORTANT: AuthSession "cancel"/"dismiss" is NOT proof of unpaid. On Android the
+ * passenger often taps "Open passenger app" on the HTTPS return page, which dismisses
+ * the Custom Tab as cancel/dismiss AFTER Stripe already charged. Always return the
+ * sessionId and let verify-and-dispatch be the source of truth — never abort the ride
+ * solely because AuthSession reported dismiss.
  */
 export async function openStripeCheckout(params: StripeCheckoutParams): Promise<StripeCheckoutResult> {
   const base = apiBase();
@@ -117,17 +123,20 @@ export async function openStripeCheckout(params: StripeCheckoutParams): Promise<
     }
 
     if (timedOut) {
-      // Session may already be paid — caller still verifies with Stripe sessionId.
       console.warn("[stripePayment] AuthSession dismissed after timeout — continuing verify path");
     } else if (result.type === "success") {
       const returned = String(result.url || "");
       if (returned.startsWith(cancelRedirectUrl) || /passenger-app-cancel/i.test(returned)) {
         throw new StripeCheckoutCancelledError("Payment was cancelled.");
       }
-      // success URL matched — Custom Tab should already be closing; dismiss is belt-and-braces.
     } else if (result.type === "cancel" || result.type === "dismiss") {
-      // User closed the tab without hitting the success redirect — do not pretend paid.
-      throw new StripeCheckoutCancelledError("Payment window closed before confirmation.");
+      // Do NOT throw. Deep-link handoff after a successful pay often reports dismiss.
+      // Caller must verify the Stripe session before aborting the booking.
+      console.warn(
+        "[stripePayment] AuthSession",
+        result.type,
+        "— continuing verify path (session may already be paid)",
+      );
     }
   }
 

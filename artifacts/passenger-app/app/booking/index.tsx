@@ -881,19 +881,22 @@ export default function BookingScreen() {
         router.replace("/active-ride");
       }
     } catch (err: any) {
-      if (rideStarted) {
-        // abortRide sends the cancel to the server via API (thin-client rule — no direct RTDB writes).
-        abortRide();
-      }
       if (err instanceof StripeCheckoutCancelledError || err?.name === "StripeCheckoutCancelledError") {
+        // Explicit Stripe cancel URL only — safe to clear the unpaid hold.
+        if (rideStarted) abortRide();
         setStripeError("Payment was cancelled. Your booking was not charged — you can try again.");
         return;
+      }
+      if (rideStarted) {
+        // abortRide sends the cancel to the server via API (thin-client rule — no direct RTDB writes).
+        // Only after verify failure / hard errors — never after a successful pay + deep-link dismiss.
+        abortRide();
       }
       const raw: string = err?.message ?? "";
       const friendly = raw.toLowerCase().includes("booking service") || raw.toLowerCase().includes("unavailable")
         ? "Could not reach the booking service. Please check your connection and try again."
-        : raw.toLowerCase().includes("stripe") || raw.toLowerCase().includes("not configured") || raw.toLowerCase().includes("payment")
-        ? "Card payment could not be completed. Your booking has been cancelled — please try another payment method."
+        : raw.toLowerCase().includes("stripe") || raw.toLowerCase().includes("not configured") || raw.toLowerCase().includes("payment") || raw.toLowerCase().includes("confirm")
+        ? "Card payment could not be confirmed. Check My Rides before rebooking — do not pay twice."
         : raw || "Something went wrong. Please try again.";
       setStripeError(friendly);
     } finally {

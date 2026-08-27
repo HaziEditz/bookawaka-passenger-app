@@ -48,6 +48,8 @@ function RootLayoutNav() {
       <Stack.Screen name="booking/index" options={{ headerShown: false }} />
       <Stack.Screen name="active-ride/index" options={{ headerShown: false }} />
       <Stack.Screen name="ride-complete/index" options={{ headerShown: false }} />
+      <Stack.Screen name="stripe-return" options={{ headerShown: false }} />
+      <Stack.Screen name="stripe-cancel" options={{ headerShown: false }} />
     </Stack>
   );
 }
