@@ -44,11 +44,8 @@ const PRESET_LABELS = [
 
 export default function ProfileScreen() {
   const colors = useColors();
-  const { user, isLoading, logout, updateWallet, updateUserProfile } = useAuth();
+  const { user, isLoading, logout, updateUserProfile } = useAuth();
   const insets = useSafeAreaInsets();
-  const [topupAmount, setTopupAmount] = useState("");
-  const [topupError, setTopupError] = useState("");
-  const [topupSuccess, setTopupSuccess] = useState("");
 
   const [addresses, setAddresses] = useState<SavedAddress[]>([]);
   const [favDrivers, setFavDrivers] = useState<FavDriver[]>([]);
@@ -213,21 +210,7 @@ export default function ProfileScreen() {
     );
   }
 
-  const handleTopup = async () => {
-    const amount = parseFloat(topupAmount);
-    setTopupError("");
-    setTopupSuccess("");
-    if (isNaN(amount) || amount <= 0) { setTopupError("Please enter a valid amount."); return; }
-    try {
-      await updateWallet(amount);
-      setTopupAmount("");
-      setTopupSuccess(`$${amount.toFixed(2)} added to your wallet!`);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      setTimeout(() => setTopupSuccess(""), 3000);
-    } catch {
-      setTopupError("Failed to update wallet. Try again.");
-    }
-  };
+  // Wallet top-up via updateWallet alone has no payment backend — do not expose it.
 
   const handleLogout = async () => {
     await logout();
@@ -280,44 +263,15 @@ export default function ProfileScreen() {
           </View>
         </View>
 
-        {/* Top Up */}
+        {/* Top-up disabled until a real payment flow exists (no Stripe/card charge behind updateWallet). */}
         <View style={styles.section}>
-          <Text style={[styles.sectionTitle, { color: colors.mutedForeground }]}>TOP UP WALLET</Text>
-          <View style={styles.topupRow}>
-            <View style={[styles.topupInput, { borderColor: colors.border, backgroundColor: colors.card }]}>
-              <Text style={[styles.currencySymbol, { color: colors.mutedForeground }]}>$</Text>
-              <TextInput
-                style={[styles.amountInput, { color: colors.foreground }]}
-                placeholder="0.00"
-                placeholderTextColor={colors.mutedForeground}
-                value={topupAmount}
-                onChangeText={setTopupAmount}
-                keyboardType="decimal-pad"
-              />
-            </View>
-            <Pressable onPress={handleTopup} style={[styles.topupBtn, { backgroundColor: colors.success }]}>
-              <Feather name="plus" size={20} color="#fff" />
-            </Pressable>
+          <Text style={[styles.sectionTitle, { color: colors.mutedForeground }]}>WALLET</Text>
+          <View style={[styles.inlineFeedback, { backgroundColor: colors.muted, borderColor: colors.border }]}>
+            <Feather name="info" size={14} color={colors.mutedForeground} />
+            <Text style={[styles.inlineFeedbackText, { color: colors.mutedForeground }]}>
+              Top-up is temporarily unavailable. Your balance still applies to bookings when you have credit.
+            </Text>
           </View>
-          <View style={styles.quickAmounts}>
-            {[10, 20, 50, 100].map((amt) => (
-              <Pressable key={amt} onPress={() => { Haptics.selectionAsync(); setTopupAmount(amt.toString()); }} style={[styles.quickBtn, { borderColor: colors.border, backgroundColor: colors.card }]}>
-                <Text style={[styles.quickBtnText, { color: colors.foreground }]}>${amt}</Text>
-              </Pressable>
-            ))}
-          </View>
-          {topupError ? (
-            <View style={[styles.inlineFeedback, { backgroundColor: colors.destructive + "15", borderColor: colors.destructive + "40" }]}>
-              <Feather name="alert-circle" size={14} color={colors.destructive} />
-              <Text style={[styles.inlineFeedbackText, { color: colors.destructive }]}>{topupError}</Text>
-            </View>
-          ) : null}
-          {topupSuccess ? (
-            <View style={[styles.inlineFeedback, { backgroundColor: colors.success + "15", borderColor: colors.success + "40" }]}>
-              <Feather name="check-circle" size={14} color={colors.success} />
-              <Text style={[styles.inlineFeedbackText, { color: colors.success }]}>{topupSuccess}</Text>
-            </View>
-          ) : null}
         </View>
 
         {/* Saved Addresses */}

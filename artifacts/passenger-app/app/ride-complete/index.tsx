@@ -81,17 +81,19 @@ export default function RideCompleteScreen() {
     setSubmitting(true);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
-    // Navigate home immediately — never leave the passenger stuck on a spinner
-    // if Firestore / history writes hang.
+    // Clear Active Ride before navigating home so the banner cannot flash.
     navigatedHome.current = true;
     didComplete.current = true;
-    goHome();
 
     const withTimeout = <T,>(p: Promise<T>, ms: number): Promise<T | void> =>
       Promise.race([
         p,
         new Promise<void>((resolve) => setTimeout(resolve, ms)),
       ]);
+
+    // completeRide snapshots then clearRide() synchronously at start.
+    const completeP = completeRide(rating, tip);
+    goHome();
 
     void (async () => {
       if (isFav && driver) {
@@ -128,7 +130,7 @@ export default function RideCompleteScreen() {
       } catch {}
 
       try {
-        await withTimeout(completeRide(rating, tip), 4000);
+        await withTimeout(completeP, 4000);
       } catch {}
     })();
   };

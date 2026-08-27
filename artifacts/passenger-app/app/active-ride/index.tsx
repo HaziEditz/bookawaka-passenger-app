@@ -11,7 +11,6 @@ import {
   Share,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -76,10 +75,6 @@ export default function ActiveRideScreen() {
   const elapsed = useElapsedTime(activeRide?.status === "searching");
   const [chatOpen, setChatOpen] = useState(false);
   const [cancelConfirm, setCancelConfirm] = useState(false);
-  const [chatMessages, setChatMessages] = useState<{ text: string; mine: boolean }[]>([
-    { text: "On my way!", mine: false },
-  ]);
-  const [chatInput, setChatInput] = useState("");
 
   const [shareModal, setShareModal] = useState(false);
   const [copiedRef, setCopiedRef] = useState(false);
@@ -214,19 +209,8 @@ export default function ActiveRideScreen() {
     addStop(stop);
   };
 
-  const handleComplete = () => {
-    if (status === "completed") {
-      router.replace("/ride-complete");
-    }
-  };
-
-  const sendMessage = () => {
-    if (!chatInput.trim()) return;
-    setChatMessages((prev) => [...prev, { text: chatInput, mine: true }]);
-    setChatInput("");
-    setTimeout(() => {
-      setChatMessages((prev) => [...prev, { text: "Got it, thanks!", mine: false }]);
-    }, 1500);
+  const openChatUnavailable = () => {
+    setChatOpen(true);
   };
 
   return (
@@ -383,7 +367,7 @@ export default function ActiveRideScreen() {
               </View>
               <Text style={[styles.plate, { color: colors.foreground }]}>{driver.plate}</Text>
             </View>
-            <Pressable onPress={() => setChatOpen(true)} style={[styles.chatBtn, { backgroundColor: colors.primary + "15", borderColor: colors.primary }]}>
+            <Pressable onPress={openChatUnavailable} style={[styles.chatBtn, { backgroundColor: colors.primary + "15", borderColor: colors.primary }]}>
               <Feather name="message-circle" size={18} color={colors.primary} />
             </Pressable>
           </View>
@@ -493,15 +477,10 @@ export default function ActiveRideScreen() {
       {/* Bottom Actions */}
       <View style={[styles.bottomBar, { paddingBottom: insets.bottom + 16, backgroundColor: colors.background, borderTopColor: colors.border }]}>
         {status === "completed" ? (
-        driver ? (
-          <Pressable onPress={handleComplete} style={[styles.actionBtn, { backgroundColor: colors.success }]}>
-            <Text style={styles.actionBtnText}>Rate & Complete</Text>
-          </Pressable>
-        ) : (
-          <Pressable onPress={() => router.replace("/(tabs)")} style={[styles.actionBtn, { backgroundColor: colors.muted }]}>
-            <Text style={[styles.actionBtnText, { color: colors.foreground }]}>Booking Closed — Back to Home</Text>
-          </Pressable>
-        )
+          // Modal owns the completed CTA — avoid a second "Rate & Complete" bar underneath.
+          <View style={[styles.actionBtn, { backgroundColor: colors.success + "18" }]}>
+            <Text style={[styles.actionBtnText, { color: colors.success }]}>Trip complete — choose an option above</Text>
+          </View>
         ) : status === "arrived" ? (
           // Cancel locked at pickup; passenger does not start the trip — driver On Board flips status.
           <View style={[styles.actionBtn, { backgroundColor: colors.success + "18" }]}>
@@ -683,34 +662,30 @@ export default function ActiveRideScreen() {
         </View>
       </Modal>
 
-      {/* Chat Modal */}
+      {/* Chat unavailable — honest stub (no fake driver auto-reply) */}
       <Modal visible={chatOpen} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setChatOpen(false)}>
         <View style={[styles.chatModal, { backgroundColor: colors.background }]}>
           <View style={[styles.chatHeader, { borderBottomColor: colors.border }]}>
-            <Text style={[styles.chatTitle, { color: colors.foreground }]}>Chat with {driver?.name ?? "Driver"}</Text>
+            <Text style={[styles.chatTitle, { color: colors.foreground }]}>Messaging</Text>
             <Pressable onPress={() => setChatOpen(false)}>
               <Feather name="x" size={22} color={colors.foreground} />
             </Pressable>
           </View>
-          <ScrollView style={styles.chatMessages} contentContainerStyle={{ padding: 16, gap: 10 }}>
-            {chatMessages.map((m, i) => (
-              <View key={i} style={[styles.bubble, m.mine ? styles.bubbleMine : styles.bubbleDriver]}>
-                <Text style={[styles.bubbleText, { color: m.mine ? "#fff" : colors.foreground }]}>{m.text}</Text>
-              </View>
-            ))}
-          </ScrollView>
-          <View style={[styles.chatInputRow, { borderTopColor: colors.border, backgroundColor: colors.background, paddingBottom: insets.bottom + 10 }]}>
-            <TextInput
-              style={[styles.chatInput, { backgroundColor: colors.card, borderColor: colors.border, color: colors.foreground }]}
-              placeholder="Type a message..."
-              placeholderTextColor={colors.mutedForeground}
-              value={chatInput}
-              onChangeText={setChatInput}
-              onSubmitEditing={sendMessage}
-              returnKeyType="send"
-            />
-            <Pressable onPress={sendMessage} style={[styles.sendBtn, { backgroundColor: colors.primary }]}>
-              <Feather name="send" size={18} color="#fff" />
+          <View style={{ flex: 1, padding: 24, justifyContent: "center", gap: 14 }}>
+            <View style={[styles.shareIconBox, { backgroundColor: colors.muted, alignSelf: "center" }]}>
+              <Feather name="message-circle" size={28} color={colors.mutedForeground} />
+            </View>
+            <Text style={[styles.confirmTitle, { color: colors.foreground, textAlign: "center" }]}>
+              In-app chat coming soon
+            </Text>
+            <Text style={[styles.confirmSub, { color: colors.mutedForeground, textAlign: "center" }]}>
+              Messaging is not live yet — messages are not delivered to your driver. Use a phone call if you need to reach them.
+            </Text>
+            <Pressable
+              onPress={() => setChatOpen(false)}
+              style={[styles.confirmBtn, { backgroundColor: colors.primary, alignSelf: "stretch" }]}
+            >
+              <Text style={[styles.confirmBtnText, { color: "#fff", textAlign: "center" }]}>Got it</Text>
             </Pressable>
           </View>
         </View>

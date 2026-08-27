@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   Alert,
   Image,
+  KeyboardAvoidingView,
   Platform,
   Pressable,
   ScrollView,
@@ -32,7 +33,7 @@ import { calculateFare, formatCurrency } from "@/lib/fareCalculator";
 import { PlaceDetail, reverseGeocode } from "@/lib/googlePlaces";
 import { useTMSettings, calcTMSubsidy } from "@/lib/tmSettings";
 import { useColors } from "@/hooks/useColors";
-import { openStripeCheckout, verifyAndDispatchBooking } from "@/lib/stripePayment";
+import { openStripeCheckout, verifyAndDispatchBooking, StripeCheckoutCancelledError } from "@/lib/stripePayment";
 import { useAppConfig } from "@/context/AppConfigContext";
 import {
   FALLBACK_TZ,
@@ -47,7 +48,7 @@ type Step = "location" | "vehicle" | "confirm";
 export default function BookingScreen() {
   const colors = useColors();
   const { user, firebaseUser, updateWallet } = useAuth();
-  const { startRide, abortRide } = useRide();
+  const { startRide, abortRide, markPaymentConfirmed } = useRide();
   const { notify } = useNotification();
   const { settings: tmSettings } = useTMSettings();
   const { platformCashEnabled } = useAppConfig();
@@ -837,6 +838,7 @@ export default function BookingScreen() {
             walletOnly: true,
             walletAmountApplied: walletContribution,
           });
+          markPaymentConfirmed();
         } else {
           const stripeAmount = walletContribution > 0 ? netFare : (discountedFare ?? fare?.total ?? 0);
           setBookingStatus("Opening payment…");
@@ -860,6 +862,8 @@ export default function BookingScreen() {
           if (walletContribution > 0) {
             updateWallet(-walletContribution).catch(() => {});
           }
+          // Server writes paymentStatus "paid"; map locally so the ride UI shows Confirmed.
+          markPaymentConfirmed();
         }
         if (!scheduledAt) {
           notify("Searching for driver...", "Looking for the nearest driver for you.", "info");
@@ -880,6 +884,10 @@ export default function BookingScreen() {
       if (rideStarted) {
         // abortRide sends the cancel to the server via API (thin-client rule — no direct RTDB writes).
         abortRide();
+      }
+      if (err instanceof StripeCheckoutCancelledError || err?.name === "StripeCheckoutCancelledError") {
+        setStripeError("Payment was cancelled. Your booking was not charged — you can try again.");
+        return;
       }
       const raw: string = err?.message ?? "";
       const friendly = raw.toLowerCase().includes("booking service") || raw.toLowerCase().includes("unavailable")
@@ -938,8 +946,17 @@ export default function BookingScreen() {
         </View>
       </View>
 
-      <ScrollView style={styles.scroll} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 100 }]} keyboardShouldPersistTaps="handled">
-
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 8 : 0}
+      >
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 120 }]}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+      >
         {/* STEP 1: Location */}
         {step === "location" && (
           <View style={styles.section}>
@@ -1871,6 +1888,7 @@ export default function BookingScreen() {
           </View>
         )}
       </ScrollView>
+      </KeyboardAvoidingView>
 
       {/* Bottom CTA */}
       <View style={[styles.bottomBar, { paddingBottom: insets.bottom + 16, backgroundColor: colors.background, borderTopColor: colors.border }]}>

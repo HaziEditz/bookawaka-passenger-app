@@ -220,6 +220,8 @@ interface RideContextType {
   /** Clear local ride without writing completion (Skip on complete modal). */
   clearRide: () => void;
   setRideStatus: (status: RideStatus) => void;
+  /** Mark local ride payment as confirmed after Stripe verify-and-dispatch. */
+  markPaymentConfirmed: () => void;
   /** One-shot extension of the no-show wait after driver Arrived. */
   signalImComing: () => Promise<boolean>;
 }
@@ -241,6 +243,29 @@ function generateToken(): string {
   return Math.random().toString(36).substr(2, 10) + Date.now().toString(36);
 }
 
+/** Map server/client payment status strings onto passenger UI enum. */
+export function normalizePaymentStatus(
+  raw: unknown,
+): "pending" | "confirmed" | "failed" | undefined {
+  if (raw == null || raw === "") return undefined;
+  const s = String(raw).trim().toLowerCase();
+  if (!s) return undefined;
+  if (s === "failed" || s === "unpaid" || s === "canceled" || s === "cancelled") return "failed";
+  // Server Stripe path writes "paid"; passenger UI historically only knew "confirmed".
+  if (
+    s === "confirmed" ||
+    s === "paid" ||
+    s === "succeeded" ||
+    s === "success" ||
+    s === "complete" ||
+    s === "completed"
+  ) {
+    return "confirmed";
+  }
+  if (s === "pending" || s === "processing" || s === "requires_payment") return "pending";
+  return "pending";
+}
+
 /** Straight-line distance between two lat/lng points in kilometres (Haversine). */
 export function haversineKm(a: LatLng, b: LatLng): number {
   const R = 6371;
@@ -251,7 +276,105 @@ export function haversineKm(a: LatLng, b: LatLng): number {
     Math.cos((a.latitude * Math.PI) / 180) *
       Math.cos((b.latitude * Math.PI) / 180) *
       Math.sin(dLng / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(s), Math.sqrt(1 - s));
+  return 2 * R * Math.asin(Math.sqrt(s));
+}
+
+function vehicleMetaLooksUseful(v: Record<string, unknown>): boolean {
+  return !!(
+    v.registration ||
+    v.Registration ||
+    v.rego ||
+    v.plate ||
+    v.Plate ||
+    v.make ||
+    v.model ||
+    v.Make ||
+    v.Model
+  );
+}
+
+function applyVehicleMetaToRide(
+  setActiveRide: React.Dispatch<React.SetStateAction<ActiveRide | null>>,
+  rawVehicleId: string,
+  v: Record<string, unknown>,
+) {
+  const rego = String(
+    v.registration ?? v.Registration ?? v.rego ?? v.Rego ?? v.plate ?? v.Plate ?? "",
+  ).trim();
+  const makeModel = [v.make ?? v.Make, v.model ?? v.Model].filter(Boolean).join(" ").trim();
+  const color = String(v.color ?? v.Colour ?? v.Color ?? "").trim();
+  const taxiNum = String(v.taxiNumber ?? v.TaxiNumber ?? v.vehicleNumber ?? v.number ?? "").trim();
+  const cabLabel = makeModel || taxiNum || rawVehicleId;
+  setActiveRide((prev) => {
+    if (!prev?.driver) return prev;
+    const plateBlank = !prev.driver.plate || prev.driver.plate === "—";
+    const cabBlank =
+      !prev.driver.cab ||
+      prev.driver.cab === "Vehicle" ||
+      prev.driver.cab === rawVehicleId;
+    if (!plateBlank && !cabBlank && prev.driver.color) return prev;
+    return {
+      ...prev,
+      driver: {
+        ...prev.driver,
+        plate: rego || prev.driver.plate,
+        cab: cabBlank ? cabLabel || prev.driver.cab : prev.driver.cab || cabLabel,
+        color: color || prev.driver.color,
+      },
+    };
+  });
+}
+
+/** Enrich driver cab/plate from fleet registry (direct key, uppercase, or scan by taxi number). */
+function enrichVehicleFromFleet(
+  companyId: string,
+  rawVehicleId: string,
+  setActiveRide: React.Dispatch<React.SetStateAction<ActiveRide | null>>,
+) {
+  const id = String(rawVehicleId || "").trim();
+  if (!companyId || !id || id === "Vehicle" || id === "—") return;
+
+  const tryApply = (snap: { exists: () => boolean; val: () => unknown }) => {
+    if (!snap.exists()) return false;
+    const v = snap.val() as Record<string, unknown>;
+    if (!v || typeof v !== "object") return false;
+    if (!vehicleMetaLooksUseful(v)) return false;
+    applyVehicleMetaToRide(setActiveRide, id, v);
+    return true;
+  };
+
+  const upper = id.toUpperCase();
+  rtdbGet(rtdbRef(rtdb, `vehicles/${companyId}/${id}`))
+    .then(async (vehSnap) => {
+      if (tryApply(vehSnap)) return;
+      if (upper !== id) {
+        const upSnap = await rtdbGet(rtdbRef(rtdb, `vehicles/${companyId}/${upper}`));
+        if (tryApply(upSnap)) return;
+      }
+      // Scan company fleet for matching key / taxiNumber / plate
+      const allSnap = await rtdbGet(rtdbRef(rtdb, `vehicles/${companyId}`));
+      if (!allSnap.exists()) return;
+      const registry = allSnap.val() as Record<string, Record<string, unknown>>;
+      if (!registry || typeof registry !== "object") return;
+      const needle = upper;
+      for (const [key, meta] of Object.entries(registry)) {
+        if (!meta || typeof meta !== "object") continue;
+        const candidates = [
+          key,
+          String(meta.taxiNumber ?? ""),
+          String(meta.TaxiNumber ?? ""),
+          String(meta.vehicleNumber ?? ""),
+          String(meta.number ?? ""),
+          String(meta.plate ?? ""),
+          String(meta.registration ?? ""),
+        ].map((x) => x.trim().toUpperCase());
+        if (candidates.includes(needle)) {
+          applyVehicleMetaToRide(setActiveRide, id, meta);
+          return;
+        }
+      }
+    })
+    .catch(() => {});
 }
 
 export interface CancelPolicy {
@@ -435,6 +558,8 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
   const rtdbRideStatusRef = useRef<ReturnType<typeof rtdbRef> | null>(null);
   const gpsListenerRef = useRef<ReturnType<typeof rtdbRef> | null>(null);
   const dispatchOverrideRef = useRef(false);
+  const activeRideRef = useRef<ActiveRide | null>(null);
+  activeRideRef.current = activeRide;
   // Stores the pending job immediately after IDs are allocated — before React state settles —
   // so abortRide can cancel RTDB even if activeRide state hasn't propagated yet.
   const pendingJobRef = useRef<{ companyId: string; jobId: string } | null>(null);
@@ -581,7 +706,10 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
         }
 
         if (data.paymentStatus) {
-          setActiveRide((prev) => prev ? { ...prev, paymentStatus: data.paymentStatus } : prev);
+          const normalized = normalizePaymentStatus(data.paymentStatus);
+          if (normalized) {
+            setActiveRide((prev) => (prev ? { ...prev, paymentStatus: normalized } : prev));
+          }
         }
 
         if (data.driverName) {
@@ -602,17 +730,28 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
               };
               const dispatchLoc = dispatchDriver.location;
               const startDist = haversineKm(dispatchLoc, pickup);
-              notify("Driver Found!", `${data.driverName} accepted your ride.`, "success");
-              stopMockDriverTimer();
-              stopSimulation();
-              dispatchOverrideRef.current = true;
+              // Enrich fleet details asynchronously (same path as RTDB assign)
+              const vid = String((data as any).vehicleId ?? "").trim();
+              if (vid && vid !== "Vehicle") {
+                enrichVehicleFromFleet(companyId, vid, setActiveRide);
+              }
               return {
                 ...prev,
                 driver: dispatchDriver,
-                status: "confirmed",
+                status: prev.status === "searching" ? "confirmed" : prev.status,
                 acceptedAt: prev.acceptedAt ?? Date.now(),
-                driverStartDistanceToPickup: prev.driverStartDistanceToPickup ?? (startDist > 0.01 ? startDist : 1),
+                driverStartDistanceToPickup:
+                  prev.driverStartDistanceToPickup ?? (startDist > 0.01 ? startDist : 1),
               };
+            }
+            // Name already set — still try vehicle enrich if plate/cab blank
+            const vid = String((data as any).vehicleId ?? prev.driver?.cab ?? "").trim();
+            if (
+              vid &&
+              vid !== "Vehicle" &&
+              (!prev.driver.plate || prev.driver.plate === "—" || prev.driver.cab === "Vehicle" || prev.driver.cab === vid)
+            ) {
+              enrichVehicleFromFleet(companyId, vid, setActiveRide);
             }
             return prev;
           });
@@ -1131,29 +1270,11 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
           gpsListenerRef.current = gpsPath;
 
           // Enrich plate / vehicle label from fleet record when dispatch omitted them
-          rtdbGet(rtdbRef(rtdb, `vehicles/${companyId}/${rawVehicleId}`)).then((vehSnap) => {
-            if (!vehSnap.exists()) return;
-            const v = vehSnap.val() as Record<string, unknown>;
-            const rego = String(v.registration ?? v.Registration ?? v.rego ?? v.plate ?? "").trim();
-            const makeModel = [v.make, v.model].filter(Boolean).join(" ").trim();
-            const color = String(v.color ?? v.Colour ?? "").trim();
-            setActiveRide((prev) => {
-              if (!prev?.driver) return prev;
-              return {
-                ...prev,
-                driver: {
-                  ...prev.driver,
-                  plate: rego || prev.driver.plate,
-                  cab: makeModel || prev.driver.cab || rawVehicleId,
-                  color: color || prev.driver.color,
-                },
-              };
-            });
-          }).catch(() => {});
+          enrichVehicleFromFleet(companyId, rawVehicleId, setActiveRide);
         }
 
         setActiveRide((prev) => {
-          if (!prev || (prev.driver && prev.driver.name === driverName && prev.driver.cab === vehicleLabel)) return prev;
+          if (!prev || (prev.driver && prev.driver.name === driverName && prev.driver.cab === vehicleLabel && prev.driver.plate !== "—")) return prev;
           const driverLat = Number(d.DriverLat ?? d.driverLat ?? d.driverlat ?? 0);
           const driverLng = Number(d.DriverLng ?? d.driverLng ?? d.driverlng ?? 0);
           const loc: LatLng = driverLat && driverLng
@@ -1165,6 +1286,9 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
           stopMockDriverTimer();
           stopSimulation();
           dispatchOverrideRef.current = true;
+          if (rawVehicleId && rawVehicleId !== "Vehicle") {
+            enrichVehicleFromFleet(companyId, rawVehicleId, setActiveRide);
+          }
           return {
             ...prev,
             status: "confirmed",
@@ -1474,6 +1598,10 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
     dispatchOverrideRef.current = false;
   };
 
+  const markPaymentConfirmed = () => {
+    setActiveRide((prev) => (prev ? { ...prev, paymentStatus: "confirmed" } : prev));
+  };
+
   const signalImComing = async (): Promise<boolean> => {
     if (!activeRide?.firestoreId || !activeRide.companyId) return false;
     if (activeRide.imComingAt) return true;
@@ -1513,10 +1641,14 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
   };
 
   const completeRide = async (rating: number, tip: number) => {
+    // Snapshot first, then clear immediately so Home never keeps showing Active Ride
+    // while Firestore/history writes are still in flight.
+    const ride = activeRideRef.current;
+    clearRide();
     try {
-      if (activeRide?.firestoreId && activeRide?.companyId) {
-        const finalFare = activeRide.fare + tip;
-        await updateFirestoreStatus(activeRide.companyId, activeRide.firestoreId, "completed", {
+      if (ride?.firestoreId && ride?.companyId) {
+        const finalFare = ride.fare + tip;
+        await updateFirestoreStatus(ride.companyId, ride.firestoreId, "completed", {
           finalFare,
           tip,
           paymentStatus: "confirmed",
@@ -1524,8 +1656,8 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
 
         // Write passenger's star rating to shared paths so driver app + SA portal can read it
         if (rating > 0) {
-          const cid = activeRide.companyId;
-          const jobId = activeRide.firestoreId;
+          const cid = ride.companyId;
+          const jobId = ride.firestoreId;
           const passengerId = auth.currentUser?.uid ?? "guest";
           const ratedAt = new Date().toISOString();
 
@@ -1540,7 +1672,7 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
             passengerRatedAt: ratedAt,
             passengerId,
             tip,
-            driverName: activeRide.driver?.name ?? null,
+            driverName: ride.driver?.name ?? null,
             bookingId: jobId,
             companyId: cid,
           }).catch(() => {});
@@ -1555,10 +1687,6 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       }
     } catch (e) {
       console.warn("[Ride] completeRide write failed:", e);
-    } finally {
-      // ALWAYS clear — leaving activeRide set, or ride-complete returning null without
-      // navigation, is what left Ad on a permanent blank screen after one trip.
-      clearRide();
     }
   };
 
@@ -1587,7 +1715,7 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
 
   return (
     <RideContext.Provider
-      value={{ activeRide, driverLocation, startRide, cancelRide, abortRide, addStop, completeRide, clearRide, setRideStatus, signalImComing }}
+      value={{ activeRide, driverLocation, startRide, cancelRide, abortRide, addStop, completeRide, clearRide, setRideStatus, markPaymentConfirmed, signalImComing }}
     >
       {children}
     </RideContext.Provider>

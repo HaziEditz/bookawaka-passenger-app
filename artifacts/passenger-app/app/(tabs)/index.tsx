@@ -142,13 +142,11 @@ export default function HomeScreen() {
             <Text style={styles.walletLabel}>Wallet Balance</Text>
             <Text style={styles.walletAmount}>{formatCurrency(user.walletBalance)}</Text>
           </View>
-          <Pressable
-            onPress={() => router.push("/(tabs)/profile")}
-            style={[styles.topUpBtn, { backgroundColor: "rgba(255,255,255,0.2)" }]}
-          >
-            <Feather name="plus" size={16} color="#fff" />
-            <Text style={styles.topUpBtnText}>Top Up</Text>
-          </Pressable>
+          {/* Top-up hidden until real card/Stripe funding exists — updateWallet alone is fake money. */}
+          <View style={[styles.topUpBtn, { backgroundColor: "rgba(255,255,255,0.12)", opacity: 0.85 }]}>
+            <Feather name="credit-card" size={16} color="#fff" />
+            <Text style={styles.topUpBtnText}>Balance</Text>
+          </View>
         </View>
       )}
 

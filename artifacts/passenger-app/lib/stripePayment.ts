@@ -2,6 +2,8 @@ import { Platform, Linking } from "react-native";
 import * as WebBrowser from "expo-web-browser";
 import { auth } from "@/lib/firebase";
 
+WebBrowser.maybeCompleteAuthSession();
+
 const apiBase = (): string => {
   const raw = process.env.EXPO_PUBLIC_API_URL ?? "";
   const url = raw || (process.env.EXPO_PUBLIC_DOMAIN ? `https://${process.env.EXPO_PUBLIC_DOMAIN}/api` : "");
@@ -22,6 +24,13 @@ export interface StripeCheckoutParams {
 export interface StripeCheckoutResult {
   sessionId: string;
   url: string;
+}
+
+export class StripeCheckoutCancelledError extends Error {
+  constructor(message = "Payment cancelled") {
+    super(message);
+    this.name = "StripeCheckoutCancelledError";
+  }
 }
 
 /**
@@ -92,19 +101,33 @@ export async function openStripeCheckout(params: StripeCheckoutParams): Promise<
     // Match the HTTPS return path prefix so Custom Tabs dismiss into the app
     // instead of trying to render passenger-app:// as a website.
     const redirectUrl = `${returnHost}/passenger-app-return`;
+    const cancelRedirectUrl = `${returnHost}/passenger-app-cancel`;
     const AUTH_SESSION_TIMEOUT_MS = 6 * 60 * 1000;
     let timedOut = false;
     const timeoutId = setTimeout(() => {
       timedOut = true;
       void WebBrowser.dismissBrowser().catch(() => undefined);
     }, AUTH_SESSION_TIMEOUT_MS);
+    let result: WebBrowser.WebBrowserAuthSessionResult;
     try {
-      await WebBrowser.openAuthSessionAsync(url, redirectUrl);
+      result = await WebBrowser.openAuthSessionAsync(url, redirectUrl);
     } finally {
       clearTimeout(timeoutId);
+      void WebBrowser.dismissBrowser().catch(() => undefined);
     }
+
     if (timedOut) {
+      // Session may already be paid — caller still verifies with Stripe sessionId.
       console.warn("[stripePayment] AuthSession dismissed after timeout — continuing verify path");
+    } else if (result.type === "success") {
+      const returned = String(result.url || "");
+      if (returned.startsWith(cancelRedirectUrl) || /passenger-app-cancel/i.test(returned)) {
+        throw new StripeCheckoutCancelledError("Payment was cancelled.");
+      }
+      // success URL matched — Custom Tab should already be closing; dismiss is belt-and-braces.
+    } else if (result.type === "cancel" || result.type === "dismiss") {
+      // User closed the tab without hitting the success redirect — do not pretend paid.
+      throw new StripeCheckoutCancelledError("Payment window closed before confirmation.");
     }
   }
 

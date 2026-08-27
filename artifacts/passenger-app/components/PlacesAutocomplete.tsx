@@ -79,7 +79,12 @@ export function PlacesAutocomplete({ placeholder, value, onSelect, icon = "map-p
           onFocus={() => setFocused(true)}
           onBlur={() => setTimeout(() => { setFocused(false); setSuggestions([]); }, 800)}
           autoFocus={autoFocus}
+          autoCorrect={false}
+          autoCapitalize="words"
           returnKeyType="search"
+          numberOfLines={1}
+          multiline={false}
+          {...(Platform.OS === "android" ? { includeFontPadding: false } : {})}
         />
         {loading && <ActivityIndicator size="small" color={accentColor} />}
         {text.length > 0 && !loading && (
@@ -125,7 +130,7 @@ export function PlacesAutocomplete({ placeholder, value, onSelect, icon = "map-p
 }
 
 const styles = StyleSheet.create({
-  wrapper: { zIndex: 100 },
+  wrapper: { zIndex: 100, width: "100%" },
   inputRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -134,8 +139,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 12,
     gap: 10,
+    minHeight: 48,
   },
-  input: { flex: 1, fontSize: 14, fontFamily: "Inter_400Regular" },
+  input: {
+    flex: 1,
+    minWidth: 0,
+    flexShrink: 1,
+    fontSize: 14,
+    fontFamily: "Inter_400Regular",
+    padding: 0,
+    margin: 0,
+  },
   dropdown: {
     borderWidth: 1,
     borderRadius: 12,
@@ -145,9 +159,10 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
     elevation: 8,
     overflow: "hidden",
+    maxHeight: 220,
   },
   suggestion: { flexDirection: "row", alignItems: "flex-start", gap: 10, padding: 12 },
-  suggestionText: { flex: 1 },
+  suggestionText: { flex: 1, minWidth: 0 },
   mainText: { fontSize: 13, fontFamily: "Inter_500Medium" },
   secondaryText: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 2 },
 });
