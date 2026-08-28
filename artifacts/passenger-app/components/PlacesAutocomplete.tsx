@@ -11,6 +11,7 @@ import {
   View,
 } from "react-native";
 import { PlaceDetail, PlaceSuggestion, geocodePlace, searchPlaces } from "@/lib/googlePlaces";
+import { PlacesBias } from "@/lib/placesBias";
 import { useColors } from "@/hooks/useColors";
 
 interface Props {
@@ -20,9 +21,19 @@ interface Props {
   icon?: keyof typeof Feather.glyphMap;
   iconColor?: string;
   autoFocus?: boolean;
+  /** Company-city location bias (lat/lng + country) — scopes suggestions locally. */
+  locationBias?: PlacesBias | null;
 }
 
-export function PlacesAutocomplete({ placeholder, value, onSelect, icon = "map-pin", iconColor, autoFocus }: Props) {
+export function PlacesAutocomplete({
+  placeholder,
+  value,
+  onSelect,
+  icon = "map-pin",
+  iconColor,
+  autoFocus,
+  locationBias,
+}: Props) {
   const colors = useColors();
   const [text, setText] = useState(value);
   const [suggestions, setSuggestions] = useState<PlaceSuggestion[]>([]);
@@ -40,7 +51,7 @@ export function PlacesAutocomplete({ placeholder, value, onSelect, icon = "map-p
     if (!input || input.length < 2) { setSuggestions([]); return; }
     debounceRef.current = setTimeout(async () => {
       setLoading(true);
-      const results = await searchPlaces(input);
+      const results = await searchPlaces(input, locationBias ?? undefined);
       setSuggestions(results);
       setLoading(false);
     }, 250);

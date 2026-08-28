@@ -16,6 +16,9 @@ router.get("/places/autocomplete", async (req, res) => {
       types: "geocode|establishment",
       components: "country:nz",
     });
+    if (typeof req.query.components === "string" && req.query.components.trim()) {
+      params.set("components", req.query.components.trim());
+    }
     if (location && typeof location === "string") {
       params.set("location", location);
       params.set("radius", typeof radius === "string" ? radius : "50000");

@@ -54,10 +54,19 @@ export interface PlaceDetail {
 
 const placeCache = new Map<string, PlaceDetail>();
 
-export async function searchPlaces(input: string): Promise<PlaceSuggestion[]> {
+export async function searchPlaces(
+  input: string,
+  bias?: { lat: number; lng: number; radius?: number; country?: string } | null,
+): Promise<PlaceSuggestion[]> {
   if (!input || input.length < 2) return [];
   try {
     const params = new URLSearchParams({ input });
+    const country = String(bias?.country || "nz").trim().toLowerCase() || "nz";
+    params.set("components", `country:${country}`);
+    if (bias && Number.isFinite(bias.lat) && Number.isFinite(bias.lng)) {
+      params.set("location", `${bias.lat},${bias.lng}`);
+      params.set("radius", String(bias.radius && bias.radius > 0 ? bias.radius : 50000));
+    }
     const data = await fetchGoogle("places/autocomplete", params);
     if (data.status !== "OK" && data.status !== "ZERO_RESULTS") return [];
     return (data.predictions ?? []).map((p: any) => ({

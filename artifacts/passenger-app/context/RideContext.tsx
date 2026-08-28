@@ -1341,6 +1341,22 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
         "cancelrequested",
         "cancel_requested",
       ]);
+
+      // Wrong-passenger / driver recall — INVT writes RecallStatus on rideStatus RTDB.
+      const recallStatus = String(d.RecallStatus ?? d.recallStatus ?? "").trim();
+      if (recallStatus === "Recalled") {
+        const recallMsg = String(d.message || "").trim() ||
+          "Your driver had to return your booking to queue. A new driver will be allocated shortly.";
+        setActiveRide((prev) => {
+          if (!prev || prev.status === "searching") return prev;
+          setTimeout(() => notify("Driver Recalled", recallMsg, "warning"), 0);
+          stopMockDriverTimer();
+          stopSimulation();
+          dispatchOverrideRef.current = false;
+          return { ...prev, status: "searching", driver: undefined, eta: null, searchPhase: "waiting" };
+        });
+      }
+
       if (rawStatus && !ignoreForStatus.has(rawStatusLower)) {
         const mapped = RTDB_STATUS_MAP[rawStatus];
         if (mapped === "cancelled") {

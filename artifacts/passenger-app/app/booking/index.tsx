@@ -31,6 +31,7 @@ import { rtdb } from "@/lib/firebase";
 import { getRoute, RouteResult } from "@/lib/directions";
 import { calculateFare, formatCurrency } from "@/lib/fareCalculator";
 import { PlaceDetail, reverseGeocode } from "@/lib/googlePlaces";
+import { resolvePlacesBias, PlacesBias } from "@/lib/placesBias";
 import { useTMSettings, calcTMSubsidy } from "@/lib/tmSettings";
 import { useColors } from "@/hooks/useColors";
 import { openStripeCheckout, verifyAndDispatchBooking, StripeCheckoutCancelledError } from "@/lib/stripePayment";
@@ -85,24 +86,40 @@ export default function BookingScreen() {
   // Business Account & ACC feature flags — read from companySettings per selected company
   const [showBusinessAccount, setShowBusinessAccount] = useState(false);
   const [showACC, setShowACC] = useState(false);
+  const [placesBias, setPlacesBias] = useState<PlacesBias>(() =>
+    resolvePlacesBias({ companyName: companies[0]?.name }),
+  );
   useEffect(() => {
     if (!company?.id || company.id === "any") {
       setShowBusinessAccount(false);
       setShowACC(false);
+      setPlacesBias(resolvePlacesBias({ companyName: company?.name }));
       return;
     }
-    const featRef = ref(rtdb, `companySettings/${company.id}/features`);
+    const settingsRef = ref(rtdb, `companySettings/${company.id}`);
     const unsub = onValue(
-      featRef,
+      settingsRef,
       (snap) => {
         const val = snap.val() as Record<string, unknown> | null;
-        setShowBusinessAccount(val?.businessAccounts === true);
-        setShowACC(val?.accEnabled === true);
+        const features = (val?.features as Record<string, unknown> | undefined) ?? {};
+        setShowBusinessAccount(features.businessAccounts === true);
+        setShowACC(features.accEnabled === true);
+        setPlacesBias(
+          resolvePlacesBias({
+            city: String(val?.city || ""),
+            country: String(val?.country || ""),
+            companyName: company.name,
+          }),
+        );
       },
-      () => { setShowBusinessAccount(false); setShowACC(false); },
+      () => {
+        setShowBusinessAccount(false);
+        setShowACC(false);
+        setPlacesBias(resolvePlacesBias({ companyName: company.name }));
+      },
     );
     return () => unsub();
-  }, [company?.id]);
+  }, [company?.id, company?.name]);
 
   // Business Account state
   const [businessAccountInput, setBusinessAccountInput] = useState("");
@@ -1182,6 +1199,7 @@ export default function BookingScreen() {
                 onSelect={setPickup}
                 icon="circle"
                 iconColor={colors.success}
+                locationBias={placesBias}
               />
               {stops.map((stop) => (
                 <View key={stop.id} style={styles.stopRow}>
@@ -1205,6 +1223,7 @@ export default function BookingScreen() {
                   icon="map-pin"
                   iconColor={colors.warning}
                   autoFocus
+                  locationBias={placesBias}
                 />
               )}
               <PlacesAutocomplete
@@ -1213,6 +1232,7 @@ export default function BookingScreen() {
                 onSelect={setDestination}
                 icon="navigation"
                 iconColor={colors.destructive}
+                locationBias={placesBias}
               />
             </View>
             <Pressable
