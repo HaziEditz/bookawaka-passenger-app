@@ -237,6 +237,8 @@ interface RideContextType {
   cancelRide: (cancelOutcome?: "refund" | "free" | "charge", reason?: string) => Promise<void>;
   abortRide: () => void;
   addStop: (stop: Stop) => void;
+  /** Change dropoff while ride is still editable (before arrived / onboard). */
+  editDestination: (place: PlaceDetail) => Promise<boolean>;
   completeRide: (rating: number, tip: number) => Promise<void>;
   /** Clear local ride without writing completion (Skip on complete modal). */
   clearRide: () => void;
@@ -1457,6 +1459,7 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
 
         setActiveRide((prev) => {
           if (!prev || (prev.driver && prev.driver.name === driverName && prev.driver.cab === vehicleLabel && prev.driver.plate !== "—")) return prev;
+          if (prev.status === "cancel_requested" || prev.status === "cancelled") return prev;
           const driverLat = Number(d.DriverLat ?? d.driverLat ?? d.driverlat ?? 0);
           const driverLng = Number(d.DriverLng ?? d.driverLng ?? d.driverlng ?? 0);
           const loc: LatLng = driverLat && driverLng
@@ -1622,6 +1625,8 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
         } else if (mapped) {
           setActiveRide((prev) => {
             if (!prev || prev.status === mapped) return prev;
+            // Don't clobber an in-flight passenger cancel with stale Assigned/Picking.
+            if (prev.status === "cancel_requested" && mapped !== "cancelled") return prev;
             // Fire notification on the transition (setTimeout keeps setState pure)
             const n = STATUS_NOTIFY[mapped];
             if (n) {
@@ -1681,6 +1686,13 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
     // Don't double-send
     if (activeRide.status === "cancel_requested") return;
 
+    const companyId = activeRide.companyId;
+    const jobId = activeRide.firestoreId;
+    if (!companyId || !jobId) {
+      notify("Cannot cancel", "Missing booking reference — try again from Home.", "error");
+      return;
+    }
+
     // Store cancel context so the RTDB listener can apply wallet logic on confirmation.
     // outcome defaults to "free" if caller didn't supply it (e.g. cash or no-driver-yet).
     pendingCancelRef.current = {
@@ -1693,18 +1705,22 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
 
     // Optimistic UI: show "cancel_requested" while waiting for backend confirmation.
     // All RTDB/Firestore listeners stay active — backend writes the final "cancelled".
-    setActiveRide((prev) => prev ? { ...prev, status: "cancel_requested" } : prev);
+    setActiveRide((prev) => (prev ? { ...prev, status: "cancel_requested" } : prev));
+    patchDiag({
+      phase: "cancel",
+      decision: `cancel requested for ${jobId} — writing Cancelled to RTDB`,
+      activeRideJobId: jobId,
+      activeRideStatus: "cancel_requested",
+    });
 
     const cancelledAt = new Date().toISOString();
 
-    // Write cancel request to RTDB. The dispatcher reads this and decides:
-    //   - whether to free the driver
-    //   - whether to restore the queue
-    //   - what fee (if any) applies
-    // We write "CancelRequested" — NOT "Cancelled" — so the backend controls the outcome.
+    // INVT passenger ingest reacts to Status:"Cancelled" (not CancelRequested).
+    // Match website/abortRide so dispatch actually closes the trip.
     const rtdbCancelFields = {
-      Status: "CancelRequested",
-      status: "cancel_requested",
+      Status: "Cancelled",
+      status: "Cancelled",
+      BookingStatus: "Cancelled",
       CancelledBy: "passenger_app",
       cancelledBy: "passenger_app",
       CancelledAt: cancelledAt,
@@ -1713,12 +1729,44 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       ...(activeRide.isTM ? { CouncilCharged: false, councilCharged: false } : {}),
     };
 
-    // Send cancel request via API — dispatcher makes all final decisions
-    cancelBookingOnServer({
-      companyId: activeRide.companyId,
-      jobId: activeRide.firestoreId,
-      cancelFields: rtdbCancelFields as Record<string, unknown>,
-    }).catch((e) => console.warn("[BookingAPI] Cancel write failed:", (e as Error).message));
+    const passengerUid = auth.currentUser?.uid;
+    try {
+      await cancelBookingOnServer({
+        companyId,
+        jobId,
+        cancelFields: rtdbCancelFields as Record<string, unknown>,
+      });
+    } catch (apiErr) {
+      console.warn("[BookingAPI] Cancel API failed — RTDB fallback:", (apiErr as Error).message);
+      try {
+        await Promise.all([
+          rtdbUpdate(rtdbRef(rtdb, `pendingjobs/${companyId}/${jobId}`), rtdbCancelFields),
+          rtdbUpdate(rtdbRef(rtdb, `allbookings/${companyId}/${jobId}`), rtdbCancelFields),
+          passengerUid
+            ? rtdbUpdate(rtdbRef(rtdb, `Passengerjobs/${passengerUid}/${jobId}`), rtdbCancelFields)
+            : Promise.resolve(),
+        ]);
+        console.warn("[BookingAPI] Cancel RTDB fallback succeeded");
+      } catch (rtdbErr) {
+        console.warn("[BookingAPI] Cancel RTDB fallback failed:", rtdbErr);
+        pendingCancelRef.current = null;
+        setActiveRide((prev) => {
+          if (!prev || prev.firestoreId !== jobId) return prev;
+          if (prev.status !== "cancel_requested") return prev;
+          return { ...prev, status: "confirmed" };
+        });
+        notify(
+          "Cancel failed",
+          (apiErr as Error).message || "Could not reach dispatch — try again.",
+          "error",
+        );
+        patchDiag({
+          phase: "cancel",
+          decision: `cancel FAILED for ${jobId}: ${(apiErr as Error).message}`,
+        });
+        return;
+      }
+    }
 
     dispatchOverrideRef.current = false;
   };
@@ -1759,6 +1807,20 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
   const addStop = (stop: Stop) => {
     setActiveRide((prev) => {
       if (!prev) return prev;
+      if (
+        prev.status === "arrived" ||
+        prev.status === "in_progress" ||
+        prev.status === "completed" ||
+        prev.status === "cancelled" ||
+        prev.status === "cancel_requested" ||
+        prev.status === "no_show"
+      ) {
+        setTimeout(
+          () => notify("Cannot edit", "Stops can only be added before the driver arrives.", "warning"),
+          0,
+        );
+        return prev;
+      }
       const newStops = [...prev.stops, stop];
       let newFare = prev.fare;
       if (prev.route) {
@@ -1774,24 +1836,91 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       }
       const updated = { ...prev, stops: newStops, fare: newFare };
       if (prev.firestoreId && prev.companyId) {
-        // Send stop edit via API — only valid before driver accepts
-        editBookingOnServer({
-          companyId: prev.companyId,
-          jobId: prev.firestoreId,
-          editFields: {
-            stops: newStops.map((s) => ({
-              id: s.id,
-              address: s.place.address,
-              lat: s.place.location.latitude,
-              lng: s.place.location.longitude,
-            })),
-            estimatedFare: newFare,
-          },
-        }).catch((e) => console.warn("[BookingAPI] Stop edit failed:", (e as Error).message));
+        const editFields = {
+          stops: newStops.map((s) => ({
+            id: s.id,
+            address: s.place.address,
+            lat: s.place.location.latitude,
+            lng: s.place.location.longitude,
+          })),
+          estimatedFare: newFare,
+          Stops: newStops.map((s) => s.place.address),
+        };
+        void (async () => {
+          try {
+            await editBookingOnServer({
+              companyId: prev.companyId,
+              jobId: prev.firestoreId,
+              editFields,
+            });
+          } catch (apiErr) {
+            console.warn("[BookingAPI] Edit stop API failed — RTDB fallback:", (apiErr as Error).message);
+            try {
+              await Promise.all([
+                rtdbUpdate(rtdbRef(rtdb, `pendingjobs/${prev.companyId}/${prev.firestoreId}`), editFields),
+                rtdbUpdate(rtdbRef(rtdb, `allbookings/${prev.companyId}/${prev.firestoreId}`), editFields),
+              ]);
+            } catch (e) {
+              console.warn("[BookingAPI] Edit stop RTDB fallback failed:", e);
+              notify("Could not save stop", "Check your connection and try again.", "error");
+            }
+          }
+        })();
       }
       return updated;
     });
     notify("Stop Added", `${stop.place.address.split(",")[0]} — fare updated`, "info");
+  };
+
+  const editDestination = async (place: PlaceDetail): Promise<boolean> => {
+    const prev = activeRideRef.current;
+    if (!prev?.firestoreId || !prev.companyId) return false;
+    if (
+      prev.status === "arrived" ||
+      prev.status === "in_progress" ||
+      prev.status === "completed" ||
+      prev.status === "cancelled" ||
+      prev.status === "cancel_requested" ||
+      prev.status === "no_show"
+    ) {
+      notify("Cannot edit", "Destination can only be changed before the driver arrives.", "warning");
+      return false;
+    }
+    const editFields = {
+      DropoffAddress: place.address,
+      dropoffAddress: place.address,
+      DropoffLat: place.location.latitude,
+      DropoffLng: place.location.longitude,
+      dropoffLat: place.location.latitude,
+      dropoffLng: place.location.longitude,
+      destination: place.address,
+    };
+    setActiveRide((r) => (r ? { ...r, destination: place } : r));
+    try {
+      await editBookingOnServer({
+        companyId: prev.companyId,
+        jobId: prev.firestoreId,
+        editFields,
+      });
+    } catch (apiErr) {
+      console.warn("[BookingAPI] Edit destination API failed — RTDB fallback:", (apiErr as Error).message);
+      try {
+        await Promise.all([
+          rtdbUpdate(rtdbRef(rtdb, `pendingjobs/${prev.companyId}/${prev.firestoreId}`), editFields),
+          rtdbUpdate(rtdbRef(rtdb, `allbookings/${prev.companyId}/${prev.firestoreId}`), editFields),
+        ]);
+      } catch (e) {
+        console.warn("[BookingAPI] Edit destination RTDB fallback failed:", e);
+        notify("Could not save destination", "Check your connection and try again.", "error");
+        return false;
+      }
+    }
+    notify("Destination updated", place.address.split(",")[0] || place.address, "success");
+    patchDiag({
+      phase: "edit",
+      decision: `destination updated on ${prev.firestoreId}`,
+    });
+    return true;
   };
 
   const recordCompletedTripHistory = async (ride?: ActiveRide | null) => {
@@ -2293,6 +2422,7 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
         const niceName = driverDisplayName || `Driver ${driverIdOnly}`;
         setActiveRide((prev) => {
           if (!prev) return prev;
+          if (prev.status === "cancel_requested" || prev.status === "cancelled") return prev;
           if (prev.driver?.name === niceName && prev.status !== "searching") return prev;
           dispatchOverrideRef.current = true;
           if (prev.status === "searching") {
@@ -2336,6 +2466,7 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
         } else if (mapped) {
           setActiveRide((prev) => {
             if (!prev || prev.status === mapped) return prev;
+            if (prev.status === "cancel_requested" && mapped !== "cancelled") return prev;
             const rank: Record<string, number> = {
               searching: 0,
               confirmed: 1,
@@ -2403,6 +2534,7 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
         cancelRide,
         abortRide,
         addStop,
+        editDestination,
         completeRide,
         clearRide,
         recordCompletedTripHistory,

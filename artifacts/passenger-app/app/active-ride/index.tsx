@@ -71,7 +71,7 @@ function searchLabel(phase: SearchPhase | undefined, elapsed: string): string {
 export default function ActiveRideScreen() {
   const colors = useColors();
   const { notify } = useNotification();
-  const { activeRide, driverLocation, cancelRide, addStop, clearRide, signalImComing, recordCompletedTripHistory, hydrateReady, resumeActiveRide, activeRideDiag } = useRide();
+  const { activeRide, driverLocation, cancelRide, addStop, editDestination, clearRide, signalImComing, recordCompletedTripHistory, hydrateReady, resumeActiveRide, activeRideDiag } = useRide();
   const params = useLocalSearchParams<{ booking?: string; cid?: string; companyId?: string }>();
   const insets = useSafeAreaInsets();
   const elapsed = useElapsedTime(activeRide?.status === "searching");
@@ -222,6 +222,13 @@ export default function ActiveRideScreen() {
     const stop = { id: Date.now().toString(), place };
     addStop(stop);
   };
+
+  const handleEditDestination = (place: PlaceDetail) => {
+    void editDestination(place);
+  };
+
+  const canEditTrip =
+    status === "searching" || status === "confirmed" || status === "on_the_way";
 
   const openChatUnavailable = () => {
     setChatOpen(true);
@@ -475,12 +482,25 @@ export default function ActiveRideScreen() {
           </View>
         )}
 
-        {/* Add stop (in progress only) */}
-        {status === "in_progress" && (
+        {/* Edit trip — destination + stops before driver arrives */}
+        {canEditTrip && (
           <View style={styles.addStopSection}>
-            <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>ADD A STOP</Text>
+            <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>EDIT TRIP</Text>
+            <Text style={[styles.fareLabel, { color: colors.mutedForeground, marginBottom: 4 }]}>
+              Change destination
+            </Text>
             <PlacesAutocomplete
-              placeholder="Add stop to route..."
+              placeholder="New destination…"
+              value=""
+              onSelect={handleEditDestination}
+              icon="navigation"
+              iconColor={colors.primary}
+            />
+            <Text style={[styles.fareLabel, { color: colors.mutedForeground, marginTop: 10, marginBottom: 4 }]}>
+              Add a stop
+            </Text>
+            <PlacesAutocomplete
+              placeholder="Add stop to route…"
               value=""
               onSelect={handleAddStop}
               icon="map-pin"
