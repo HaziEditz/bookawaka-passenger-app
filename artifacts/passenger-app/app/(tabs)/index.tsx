@@ -105,8 +105,12 @@ export default function HomeScreen() {
         </Pressable>
       )}
 
-      {/* Active Ride Banner */}
-      {activeRide && (
+      {/* Active Ride Banner — never show terminal / in-flight cancel as "Active" */}
+      {activeRide &&
+        activeRide.status !== "cancelled" &&
+        activeRide.status !== "completed" &&
+        activeRide.status !== "no_show" &&
+        activeRide.status !== "cancel_requested" && (
         <Pressable
           onPress={() => router.push("/active-ride")}
           style={[styles.activeBanner, { backgroundColor: colors.primary }]}

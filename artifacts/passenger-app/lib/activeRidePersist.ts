@@ -14,7 +14,8 @@ export async function saveActiveRideSnapshot(ride: ActiveRide | null): Promise<v
     if (
       ride.status === "completed" ||
       ride.status === "cancelled" ||
-      ride.status === "no_show"
+      ride.status === "no_show" ||
+      ride.status === "cancel_requested"
     ) {
       await AsyncStorage.removeItem(KEY);
       return;
@@ -34,7 +35,8 @@ export async function loadActiveRideSnapshot(): Promise<ActiveRide | null> {
     if (
       parsed.status === "completed" ||
       parsed.status === "cancelled" ||
-      parsed.status === "no_show"
+      parsed.status === "no_show" ||
+      parsed.status === "cancel_requested"
     ) {
       await AsyncStorage.removeItem(KEY);
       return null;

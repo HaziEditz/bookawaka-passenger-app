@@ -1577,26 +1577,16 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
               setTimeout(() => notify("Ride Cancelled", "Your booking has been cancelled at no charge.", "info"), 0);
             }
             // Clear ride now that backend has confirmed
-            stopMockDriverTimer();
-            stopSimulation();
-            stopFirestoreListener();
-            setTimeout(() => stopRtdbJobListener(), 0);
-            pendingJobRef.current = null;
-            setActiveRide(null);
-            setDriverLocation(null);
+            clearRide();
           } else {
             // Cancellation was NOT initiated by the passenger (operator/dispatcher cancelled).
-            // Show the "cancelled" state and let the user navigate away — do not auto-clear,
-            // so the user can see what happened before leaving the screen.
-            setActiveRide((prev) => {
-              if (!prev || prev.status === "cancelled") return prev;
-              setTimeout(() => notify(
-                "Booking Cancelled",
-                "Your booking was cancelled by the operator.",
-                "warning",
-              ), 0);
-              return { ...prev, status: "cancelled" };
-            });
+            // Clear Active Ride so Home does not keep showing a dead banner.
+            setTimeout(() => notify(
+              "Booking Cancelled",
+              "Your booking was cancelled by the operator.",
+              "warning",
+            ), 0);
+            clearRide();
           }
         } else if (mapped === "no_show") {
           // Driver-initiated no-show — apply charge logic server-side;
@@ -1730,12 +1720,15 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
     };
 
     const passengerUid = auth.currentUser?.uid;
+    const rideSnap = activeRide;
+    let wrote = false;
     try {
       await cancelBookingOnServer({
         companyId,
         jobId,
         cancelFields: rtdbCancelFields as Record<string, unknown>,
       });
+      wrote = true;
     } catch (apiErr) {
       console.warn("[BookingAPI] Cancel API failed — RTDB fallback:", (apiErr as Error).message);
       try {
@@ -1747,6 +1740,7 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
             : Promise.resolve(),
         ]);
         console.warn("[BookingAPI] Cancel RTDB fallback succeeded");
+        wrote = true;
       } catch (rtdbErr) {
         console.warn("[BookingAPI] Cancel RTDB fallback failed:", rtdbErr);
         pendingCancelRef.current = null;
@@ -1766,6 +1760,43 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
         });
         return;
       }
+    }
+
+    // Don't wait for RTDB echo — home banner keys off activeRide truthiness, and the
+    // reattach listener historically only set status:"cancelled" without clearing.
+    if (wrote) {
+      const pending = pendingCancelRef.current;
+      pendingCancelRef.current = null;
+      if (pending?.outcome === "refund") {
+        const creditAmt =
+          pending.isTM && pending.tmPassengerAmount ? pending.tmPassengerAmount : pending.fare;
+        updateWallet(creditAmt).catch(() => {});
+        notify(
+          pending.isTM ? "TM Co-payment Credited" : "Fare Credited to Wallet",
+          `${formatCurrency(creditAmt)} added to your wallet for your next ride.${pending.isTM ? " The council is not charged." : ""}`,
+          "success",
+        );
+      } else if (pending?.outcome === "charge") {
+        const chargeAmt =
+          pending.isTM && pending.tmPassengerAmount ? pending.tmPassengerAmount : pending.fare;
+        notify(
+          pending.isTM ? "TM Co-payment Charged" : "Cancellation Fee Charged",
+          `${formatCurrency(chargeAmt)} has been charged.${pending.isTM ? " No council charge applies." : " The driver has been paid."}`,
+          "warning",
+        );
+      } else {
+        notify("Ride Cancelled", "Your booking has been cancelled.", "info");
+      }
+      void ensureTripInHistory(
+        historyPayloadFromRide({ ...rideSnap, status: "cancelled", firestoreId: jobId }),
+      );
+      clearRide();
+      patchDiag({
+        phase: "cancel",
+        decision: `cancel OK — cleared Active Ride ${jobId}`,
+        activeRideJobId: "—",
+        activeRideStatus: "—",
+      });
     }
 
     dispatchOverrideRef.current = false;
@@ -2028,6 +2059,7 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
     stopRtdbJobListener();
     pendingJobRef.current = null;
     listenersWiredForRef.current = "";
+    pendingCancelRef.current = null;
     void clearActiveRideSnapshot();
     setActiveRide(null);
     setDriverLocation(null);
@@ -2448,11 +2480,9 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       if (rawStatus && rawStatusLower !== "pendingpayment") {
         const mapped = RTDB_STATUS_MAP[rawStatus] || RTDB_STATUS_MAP[rawStatus.toLowerCase()];
         if (mapped === "cancelled") {
-          setActiveRide((prev) => {
-            if (!prev || prev.status === "cancelled") return prev;
-            setTimeout(() => notify("Booking Cancelled", "Your booking was cancelled.", "warning"), 0);
-            return { ...prev, status: "cancelled" };
-          });
+          // Reattach path: always clear — Home banner is gated on activeRide truthiness.
+          setTimeout(() => notify("Booking Cancelled", "Your booking was cancelled.", "info"), 0);
+          clearRide();
         } else if (mapped === "completed") {
           setActiveRide((prev) => {
             if (!prev || prev.status === "completed") return prev;
