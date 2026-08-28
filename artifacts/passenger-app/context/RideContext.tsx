@@ -41,6 +41,14 @@ import {
   isUnpaidCardHold,
   pickAuthoritativeStatus,
 } from "@/lib/passengerJobRecover";
+import {
+  emptyActiveRideDiag,
+  driverOf,
+  payOf,
+  statusOf,
+  type ActiveRideDiag,
+  type ActiveRideDiagProbe,
+} from "@/lib/activeRideDiag";
 
 export type RideStatus =
   | "idle"
@@ -243,6 +251,8 @@ interface RideContextType {
   hydrateReady: boolean;
   /** Reattach a live booking by id (Stripe return / push / deep link). */
   resumeActiveRide: (companyId: string, bookingId: string) => Promise<boolean>;
+  /** Inline Active Ride trace for Ad (records checked + decision). */
+  activeRideDiag: ActiveRideDiag;
 }
 
 const RideContext = createContext<RideContextType | null>(null);
@@ -591,6 +601,14 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
   const [activeRide, setActiveRide] = useState<ActiveRide | null>(null);
   const [driverLocation, setDriverLocation] = useState<LatLng | null>(null);
   const [hydrateReady, setHydrateReady] = useState(false);
+  const [activeRideDiag, setActiveRideDiag] = useState<ActiveRideDiag>(() => emptyActiveRideDiag());
+  const patchDiag = useCallback((partial: Partial<ActiveRideDiag>) => {
+    setActiveRideDiag((prev) => ({
+      ...prev,
+      ...partial,
+      at: new Date().toISOString(),
+    }));
+  }, []);
   const simulationRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const mockDriverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const progressRef = useRef(0);
@@ -1260,6 +1278,12 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
 
       const rawStatus = String(d.Status ?? d.status ?? d.BookingStatus ?? d.bookingStatus ?? "").trim();
       const rawStatusLower = rawStatus.toLowerCase();
+      patchDiag({
+        phase: `live:${source}`,
+        listenersKey: listenersWiredForRef.current || `${pendingJobRef.current?.companyId}/${pendingJobRef.current?.jobId}`,
+        lastLiveRtdbStatus: `${source}=${rawStatus || "(empty)"} drv=${driverOf(d)}`,
+        decision: `live ${source} Status=${rawStatus || "(empty)"} → apply to Active Ride`,
+      });
 
       // ── Update search phase so the passenger sees live queue status ──────
       setActiveRide((prev) => {
@@ -1685,7 +1709,26 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
         ? (paxSnap.val() as Record<string, unknown>)
         : ({ CompanyId: cid, companyId: cid } as Record<string, unknown>);
       const statusRaw = pickAuthoritativeStatus(pend, ab, pax);
+      const merged = { ...(pax || {}), ...(ab || {}), ...(pend || {}) };
+      const probe: ActiveRideDiagProbe = {
+        jobId: bid,
+        companyId: cid,
+        passengerjobsStatus: statusOf(pax),
+        pendingjobsStatus: statusOf(pend),
+        allbookingsStatus: statusOf(ab),
+        paymentStatus: payOf(merged),
+        driverId: driverOf(merged),
+        hasPendingJobsNode: !!pend,
+        authoritativeStatus: statusRaw != null ? String(statusRaw) : "(none)",
+        decision: "resume: probing",
+      };
       if (isTerminalJobStatus(statusRaw)) {
+        probe.decision = "skip — terminal (history only)";
+        patchDiag({
+          phase: "resumeActiveRide",
+          decision: `resume ${bid}: terminal → no Active Ride`,
+          probes: [probe],
+        });
         const hist = historyFromJobNodes(bid, pax, ab);
         if (hist) void ensureTripInHistory(hist);
         return false;
@@ -1697,16 +1740,42 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
           hasPendingJobsNode: !!pend,
         })
       ) {
+        probe.decision = "skip — unpaid card hold (no pendingjobs)";
+        patchDiag({
+          phase: "resumeActiveRide",
+          decision: `resume ${bid}: unpaid hold → hide Active Ride`,
+          probes: [probe],
+        });
         return false;
       }
       const ride = buildActiveRideFromJobNodes(bid, pax, ab, pend);
-      if (!ride) return false;
+      if (!ride) {
+        probe.decision = "skip — buildActiveRideFromJobNodes returned null";
+        patchDiag({
+          phase: "resumeActiveRide",
+          decision: `resume ${bid}: build null → hide`,
+          probes: [probe],
+        });
+        return false;
+      }
+      probe.decision = `SHOW Active Ride status=${ride.status}`;
       pendingJobRef.current = { companyId: cid, jobId: bid };
       setActiveRide(ride);
       await saveActiveRideSnapshot(ride);
+      patchDiag({
+        phase: "resumeActiveRide",
+        decision: `resume OK → showing ${bid} (${ride.status})`,
+        activeRideJobId: bid,
+        activeRideStatus: ride.status,
+        probes: [probe],
+      });
       return true;
     } catch (e) {
       console.warn("[Ride] resumeActiveRide failed:", e);
+      patchDiag({
+        phase: "resumeActiveRide",
+        decision: `resume failed: ${e instanceof Error ? e.message : String(e)}`,
+      });
       return false;
     }
   };
@@ -1835,26 +1904,60 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     void saveActiveRideSnapshot(activeRide);
-  }, [activeRide]);
+    patchDiag({
+      activeRideJobId: activeRide?.firestoreId ? String(activeRide.firestoreId) : "—",
+      activeRideStatus: activeRide?.status ? String(activeRide.status) : "—",
+      listenersKey: listenersWiredForRef.current || "—",
+    });
+  }, [activeRide, patchDiag]);
 
   // Snapshot + Passengerjobs×pendingjobs×allbookings recover before hydrateReady.
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      const probes: ActiveRideDiagProbe[] = [];
+      let finalDecision = "hydrate: no live job found";
       try {
+        patchDiag({
+          phase: "hydrate",
+          uid: auth.currentUser?.uid || "",
+          hydrateReady: false,
+          decision: "loading AsyncStorage + Passengerjobs…",
+        });
+
         if (!activeRideRef.current) {
           const snap = await loadActiveRideSnapshot();
           if (!cancelled && snap?.firestoreId && snap.companyId) {
             pendingJobRef.current = { companyId: snap.companyId, jobId: snap.firestoreId };
             setActiveRide(snap);
+            patchDiag({
+              asyncStorageJobId: String(snap.firestoreId),
+              activeRideJobId: String(snap.firestoreId),
+              activeRideStatus: String(snap.status || "—"),
+              decision: `AsyncStorage restored ${snap.firestoreId} (${snap.status}) — still verifying RTDB…`,
+            });
+          } else {
+            patchDiag({ asyncStorageJobId: "(none)" });
           }
+        } else {
+          patchDiag({
+            asyncStorageJobId: String(activeRideRef.current.firestoreId || "—"),
+          });
         }
 
         const uid = auth.currentUser?.uid;
-        if (!uid || cancelled) return;
+        if (!uid || cancelled) {
+          finalDecision = uid ? "hydrate cancelled" : "hydrate: no auth uid — cannot read Passengerjobs";
+          return;
+        }
 
         const treeSnap = await rtdbGet(rtdbRef(rtdb, `Passengerjobs/${uid}`)).catch(() => null);
-        if (!treeSnap?.exists?.() || cancelled) return;
+        if (!treeSnap?.exists?.() || cancelled) {
+          finalDecision = treeSnap?.exists?.()
+            ? "hydrate cancelled"
+            : "Passengerjobs tree missing/empty — nothing to recover";
+          return;
+        }
         const tree = treeSnap.val() as Record<string, Record<string, unknown>>;
         const entries = Object.entries(tree || {}).filter(([, v]) => v && typeof v === "object");
         entries.sort((a, b) => {
@@ -1883,8 +1986,23 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
           }
 
           const statusRaw = pickAuthoritativeStatus(pend, ab, paxJob);
+          const merged = { ...paxJob, ...(ab || {}), ...(pend || {}) };
+          const probe: ActiveRideDiagProbe = {
+            jobId,
+            companyId,
+            passengerjobsStatus: statusOf(paxJob),
+            pendingjobsStatus: statusOf(pend),
+            allbookingsStatus: statusOf(ab),
+            paymentStatus: payOf(merged),
+            driverId: driverOf(merged),
+            hasPendingJobsNode: !!pend,
+            authoritativeStatus: statusRaw != null ? String(statusRaw) : "(none)",
+            decision: "checking…",
+          };
 
           if (isTerminalJobStatus(statusRaw)) {
+            probe.decision = "terminal → history only";
+            if (probes.length < 4) probes.push(probe);
             const hist = historyFromJobNodes(jobId, paxJob, ab);
             if (hist) void ensureTripInHistory(hist);
             if (activeRideRef.current?.firestoreId === jobId) {
@@ -1895,32 +2013,73 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
           }
 
           const ride = buildActiveRideFromJobNodes(jobId, paxJob, ab, pend);
-          if (!ride) continue;
+          if (!ride) {
+            probe.decision = isUnpaidCardHold({
+              statusRaw,
+              paymentStatus: merged.PaymentStatus ?? merged.paymentStatus,
+              hasPendingJobsNode: !!pend,
+            })
+              ? "HIDE — unpaid card hold"
+              : "HIDE — build returned null";
+            if (probes.length < 4) probes.push(probe);
+            continue;
+          }
 
           const cur = activeRideRef.current;
           if (cur?.firestoreId === jobId) {
+            probe.decision = `MERGE into existing Active Ride (${ride.status})`;
+            if (probes.length < 4) probes.push(probe);
             setActiveRide((prev) =>
               prev && prev.firestoreId === jobId ? { ...prev, ...ride, id: prev.id } : prev,
             );
             restoredLive = true;
+            finalDecision = `showing ${jobId} via merge (${ride.status})`;
             break;
           }
           if (!restoredLive && !cur) {
+            probe.decision = `SHOW Active Ride (${ride.status})`;
+            if (probes.length < 4) probes.push(probe);
             pendingJobRef.current = { companyId: ride.companyId, jobId: ride.firestoreId };
             setActiveRide(ride);
             void saveActiveRideSnapshot(ride);
             restoredLive = true;
+            finalDecision = `showing ${jobId} via recover (${ride.status})`;
             break;
           }
+          probe.decision = "live job but another Active Ride already attached — skip";
+          if (probes.length < 4) probes.push(probe);
+        }
+        if (!restoredLive && !activeRideRef.current) {
+          finalDecision =
+            probes.length === 0
+              ? "no Passengerjobs entries to probe"
+              : "probed jobs but none qualified for Active Ride (see probes)";
+        } else if (!restoredLive && activeRideRef.current) {
+          finalDecision = `keeping AsyncStorage ride ${activeRideRef.current.firestoreId} (no newer recover match)`;
         }
       } finally {
-        if (!cancelled) setHydrateReady(true);
+        if (!cancelled) {
+          setHydrateReady(true);
+          patchDiag({
+            phase: "hydrate_done",
+            hydrateReady: true,
+            uid: auth.currentUser?.uid || "",
+            decision: finalDecision,
+            probes,
+            activeRideJobId: activeRideRef.current?.firestoreId
+              ? String(activeRideRef.current.firestoreId)
+              : "—",
+            activeRideStatus: activeRideRef.current?.status
+              ? String(activeRideRef.current.status)
+              : "—",
+          });
+        }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [authUser?.uid, ensureTripInHistory]);
+  }, [authUser?.uid, ensureTripInHistory, patchDiag]);
 
   // Mid-session: if Active Ride is empty, try resume from newest Passengerjobs.
   useEffect(() => {
@@ -1992,6 +2151,12 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       const d = snap.val() as Record<string, unknown>;
       const rawStatus = String(d.Status ?? d.status ?? d.BookingStatus ?? d.bookingStatus ?? "").trim();
       const rawStatusLower = rawStatus.toLowerCase().replace(/\s+/g, "");
+      patchDiag({
+        phase: "live:reattach",
+        listenersKey: key,
+        lastLiveRtdbStatus: `reattach=${rawStatus || "(empty)"} drv=${driverOf(d)}`,
+        decision: `live reattach Status=${rawStatus || "(empty)"} → map to UI`,
+      });
       const driverDisplayName = String(
         d.DriverName ?? d.driverName ?? d.AssignedDriverName ?? "",
       ).trim();
@@ -2118,6 +2283,7 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
         signalImComing,
         hydrateReady,
         resumeActiveRide,
+        activeRideDiag,
       }}
     >
       {children}

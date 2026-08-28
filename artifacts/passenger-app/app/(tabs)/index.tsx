@@ -13,6 +13,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAuth } from "@/context/AuthContext";
 import { useRide } from "@/context/RideContext";
 import { useTripHistory } from "@/context/TripContext";
+import { ActiveRideTracePanel } from "@/components/ActiveRideTracePanel";
 import { formatCurrency } from "@/lib/fareCalculator";
 import { useColors } from "@/hooks/useColors";
 import { useSuperBroadcast } from "@/hooks/useSuperBroadcast";
@@ -31,7 +32,7 @@ const SERVICE_TILES = [
 export default function HomeScreen() {
   const colors = useColors();
   const { user, isLoading } = useAuth();
-  const { activeRide } = useRide();
+  const { activeRide, activeRideDiag } = useRide();
   const { history } = useTripHistory();
   const insets = useSafeAreaInsets();
   const broadcasts = useSuperBroadcast();
@@ -131,6 +132,9 @@ export default function HomeScreen() {
           <Feather name="chevron-right" size={20} color="rgba(255,255,255,0.8)" />
         </Pressable>
       )}
+
+      {/* Always visible — Ad can see why Active Ride is/isn't showing */}
+      <ActiveRideTracePanel diag={activeRideDiag} />
 
       {/* Quick Book */}
       <Pressable
