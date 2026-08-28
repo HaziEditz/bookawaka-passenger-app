@@ -112,9 +112,20 @@ export default function HomeScreen() {
         >
           <View style={[styles.activeDot, { backgroundColor: "#4ade80" }]} />
           <View style={styles.activeBannerText}>
-            <Text style={styles.activeBannerTitle}>Active Ride</Text>
+            <Text style={styles.activeBannerTitle}>
+              {activeRide.status === "searching"
+                ? "Finding your driver…"
+                : activeRide.status === "arrived"
+                  ? "Driver has arrived"
+                  : activeRide.status === "in_progress"
+                    ? "Trip in progress"
+                    : "Active Ride"}
+            </Text>
             <Text style={styles.activeBannerSub}>
               {activeRide.pickup.address.split(",")[0]} → {activeRide.destination.address.split(",")[0]}
+            </Text>
+            <Text style={[styles.activeBannerSub, { opacity: 0.85, marginTop: 2 }]}>
+              Tap to track, edit stops, or cancel
             </Text>
           </View>
           <Feather name="chevron-right" size={20} color="rgba(255,255,255,0.8)" />

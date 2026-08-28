@@ -895,7 +895,13 @@ export default function BookingScreen() {
       if (scheduledAt) {
         router.replace("/(tabs)/scheduled");
       } else {
-        router.replace("/active-ride");
+        router.replace({
+          pathname: "/active-ride",
+          params: {
+            booking: bookingId || "",
+            cid: effectiveCompany.id,
+          },
+        });
       }
     } catch (err: any) {
       if (err instanceof StripeCheckoutCancelledError || err?.name === "StripeCheckoutCancelledError") {

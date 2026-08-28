@@ -1,7 +1,7 @@
 import { Feather } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import React, { useEffect, useMemo, useState } from "react";
 import {
   Modal,
@@ -70,7 +70,8 @@ function searchLabel(phase: SearchPhase | undefined, elapsed: string): string {
 export default function ActiveRideScreen() {
   const colors = useColors();
   const { notify } = useNotification();
-  const { activeRide, driverLocation, cancelRide, addStop, clearRide, signalImComing, recordCompletedTripHistory, hydrateReady } = useRide();
+  const { activeRide, driverLocation, cancelRide, addStop, clearRide, signalImComing, recordCompletedTripHistory, hydrateReady, resumeActiveRide } = useRide();
+  const params = useLocalSearchParams<{ booking?: string; cid?: string; companyId?: string }>();
   const insets = useSafeAreaInsets();
   const elapsed = useElapsedTime(activeRide?.status === "searching");
   const [chatOpen, setChatOpen] = useState(false);
@@ -87,6 +88,14 @@ export default function ActiveRideScreen() {
     const t = setTimeout(() => setSettled(true), 400);
     return () => clearTimeout(t);
   }, []);
+
+  // Deep link / Stripe return: restore by booking id before giving up.
+  useEffect(() => {
+    const booking = String(params.booking || "").trim();
+    const cid = String(params.cid || params.companyId || "").trim();
+    if (!hydrateReady || activeRide || !booking || !cid) return;
+    void resumeActiveRide(cid, booking);
+  }, [hydrateReady, activeRide, params.booking, params.cid, params.companyId, resumeActiveRide]);
 
   // Wait for cold-start / Passengerjobs recover before treating null as "no ride".
   useEffect(() => {

@@ -38,6 +38,8 @@ import {
   buildActiveRideFromJobNodes,
   historyFromJobNodes,
   isTerminalJobStatus,
+  isUnpaidCardHold,
+  pickAuthoritativeStatus,
 } from "@/lib/passengerJobRecover";
 
 export type RideStatus =
@@ -239,6 +241,8 @@ interface RideContextType {
   signalImComing: () => Promise<boolean>;
   /** True once cold-start snapshot + Passengerjobs recover attempt finished. */
   hydrateReady: boolean;
+  /** Reattach a live booking by id (Stripe return / push / deep link). */
+  resumeActiveRide: (companyId: string, bookingId: string) => Promise<boolean>;
 }
 
 const RideContext = createContext<RideContextType | null>(null);
@@ -1663,6 +1667,50 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
     await ensureTripInHistory(historyPayloadFromRide({ ...r, status: "completed" }));
   };
 
+  const resumeActiveRide = async (companyId: string, bookingId: string): Promise<boolean> => {
+    const cid = String(companyId || "").trim();
+    const bid = String(bookingId || "").trim();
+    if (!cid || !bid) return false;
+    try {
+      const [abSnap, pendSnap, paxSnap] = await Promise.all([
+        rtdbGet(rtdbRef(rtdb, `allbookings/${cid}/${bid}`)).catch(() => null),
+        rtdbGet(rtdbRef(rtdb, `pendingjobs/${cid}/${bid}`)).catch(() => null),
+        auth.currentUser?.uid
+          ? rtdbGet(rtdbRef(rtdb, `Passengerjobs/${auth.currentUser.uid}/${bid}`)).catch(() => null)
+          : Promise.resolve(null),
+      ]);
+      const ab = abSnap?.exists?.() ? (abSnap.val() as Record<string, unknown>) : null;
+      const pend = pendSnap?.exists?.() ? (pendSnap.val() as Record<string, unknown>) : null;
+      const pax = paxSnap?.exists?.()
+        ? (paxSnap.val() as Record<string, unknown>)
+        : ({ CompanyId: cid, companyId: cid } as Record<string, unknown>);
+      const statusRaw = pickAuthoritativeStatus(pend, ab, pax);
+      if (isTerminalJobStatus(statusRaw)) {
+        const hist = historyFromJobNodes(bid, pax, ab);
+        if (hist) void ensureTripInHistory(hist);
+        return false;
+      }
+      if (
+        isUnpaidCardHold({
+          statusRaw,
+          paymentStatus: (pend || ab || pax)?.PaymentStatus ?? (pend || ab || pax)?.paymentStatus,
+          hasPendingJobsNode: !!pend,
+        })
+      ) {
+        return false;
+      }
+      const ride = buildActiveRideFromJobNodes(bid, pax, ab, pend);
+      if (!ride) return false;
+      pendingJobRef.current = { companyId: cid, jobId: bid };
+      setActiveRide(ride);
+      await saveActiveRideSnapshot(ride);
+      return true;
+    } catch (e) {
+      console.warn("[Ride] resumeActiveRide failed:", e);
+      return false;
+    }
+  };
+
   const clearRide = () => {
     stopMockDriverTimer();
     stopSimulation();
@@ -1789,7 +1837,7 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
     void saveActiveRideSnapshot(activeRide);
   }, [activeRide]);
 
-  // Cold start / OTA reload — restore in-memory ride so Active Ride + listeners can resume.
+  // Snapshot + Passengerjobs×pendingjobs×allbookings recover before hydrateReady.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -1801,26 +1849,14 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
             setActiveRide(snap);
           }
         }
-      } finally {
-        if (!cancelled) setHydrateReady(true);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
-  // Authoritative recover: Passengerjobs index + allbookings Status (Passengerjobs is often stale).
-  useEffect(() => {
-    const uid = auth.currentUser?.uid;
-    if (!uid) return;
-    const treeRef = rtdbRef(rtdb, `Passengerjobs/${uid}`);
-    const unsub = rtdbOnValue(treeRef, (snap) => {
-      void (async () => {
-        if (!snap.exists()) return;
-        const tree = snap.val() as Record<string, Record<string, unknown>>;
+        const uid = auth.currentUser?.uid;
+        if (!uid || cancelled) return;
+
+        const treeSnap = await rtdbGet(rtdbRef(rtdb, `Passengerjobs/${uid}`)).catch(() => null);
+        if (!treeSnap?.exists?.() || cancelled) return;
+        const tree = treeSnap.val() as Record<string, Record<string, unknown>>;
         const entries = Object.entries(tree || {}).filter(([, v]) => v && typeof v === "object");
-        // Newest first
         entries.sort((a, b) => {
           const ta = Number(a[1].CreatedAt ?? a[1].createdAt ?? 0);
           const tb = Number(b[1].CreatedAt ?? b[1].createdAt ?? 0);
@@ -1828,55 +1864,90 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
         });
 
         let restoredLive = false;
-        for (const [jobId, paxJob] of entries.slice(0, 25)) {
+        for (const [jobId, paxJob] of entries.slice(0, 30)) {
+          if (cancelled) return;
           const companyId = String(paxJob.CompanyId || paxJob.companyId || "").trim();
           if (!companyId) continue;
+
           let ab: Record<string, unknown> | null = null;
+          let pend: Record<string, unknown> | null = null;
           try {
-            const abSnap = await rtdbGet(rtdbRef(rtdb, `allbookings/${companyId}/${jobId}`));
+            const [abSnap, pendSnap] = await Promise.all([
+              rtdbGet(rtdbRef(rtdb, `allbookings/${companyId}/${jobId}`)),
+              rtdbGet(rtdbRef(rtdb, `pendingjobs/${companyId}/${jobId}`)),
+            ]);
             if (abSnap.exists()) ab = abSnap.val() as Record<string, unknown>;
+            if (pendSnap.exists()) pend = pendSnap.val() as Record<string, unknown>;
           } catch {
-            ab = null;
+            /* best-effort */
           }
 
-          const statusRaw = ab
-            ? ab.Status ?? ab.status ?? ab.BookingStatus
-            : paxJob.Status ?? paxJob.status ?? paxJob.BookingStatus;
+          const statusRaw = pickAuthoritativeStatus(pend, ab, paxJob);
 
           if (isTerminalJobStatus(statusRaw)) {
             const hist = historyFromJobNodes(jobId, paxJob, ab);
-            if (hist) {
-              void ensureTripInHistory(hist);
+            if (hist) void ensureTripInHistory(hist);
+            if (activeRideRef.current?.firestoreId === jobId) {
+              void clearActiveRideSnapshot();
+              setActiveRide(null);
             }
             continue;
           }
 
-          // Restore at most one live ride if memory/snapshot empty.
-          if (!restoredLive && !activeRideRef.current) {
-            const ride = buildActiveRideFromJobNodes(jobId, paxJob, ab);
-            if (ride) {
-              // Skip unpaid card holds still PendingPayment with no paid flag on allbookings.
-              const pay = String(
-                (ab && (ab.PaymentStatus || ab.paymentStatus)) ||
-                  paxJob.PaymentStatus ||
-                  paxJob.paymentStatus ||
-                  "",
-              ).toLowerCase();
-              const st = String(statusRaw || "").toLowerCase();
-              if (st.includes("pendingpayment") && pay !== "paid" && pay !== "confirmed") {
-                continue;
-              }
-              pendingJobRef.current = { companyId: ride.companyId, jobId: ride.firestoreId };
-              setActiveRide(ride);
-              void saveActiveRideSnapshot(ride);
-              restoredLive = true;
-            }
+          const ride = buildActiveRideFromJobNodes(jobId, paxJob, ab, pend);
+          if (!ride) continue;
+
+          const cur = activeRideRef.current;
+          if (cur?.firestoreId === jobId) {
+            setActiveRide((prev) =>
+              prev && prev.firestoreId === jobId ? { ...prev, ...ride, id: prev.id } : prev,
+            );
+            restoredLive = true;
+            break;
           }
+          if (!restoredLive && !cur) {
+            pendingJobRef.current = { companyId: ride.companyId, jobId: ride.firestoreId };
+            setActiveRide(ride);
+            void saveActiveRideSnapshot(ride);
+            restoredLive = true;
+            break;
+          }
+        }
+      } finally {
+        if (!cancelled) setHydrateReady(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [authUser?.uid, ensureTripInHistory]);
+
+  // Mid-session: if Active Ride is empty, try resume from newest Passengerjobs.
+  useEffect(() => {
+    const uid = auth.currentUser?.uid;
+    if (!uid || !hydrateReady) return;
+    const treeRef = rtdbRef(rtdb, `Passengerjobs/${uid}`);
+    const unsub = rtdbOnValue(treeRef, (snap) => {
+      void (async () => {
+        if (!snap.exists()) return;
+        if (activeRideRef.current) return; // live listeners own updates while a ride is attached
+        const tree = snap.val() as Record<string, Record<string, unknown>>;
+        const entries = Object.entries(tree || {}).filter(([, v]) => v && typeof v === "object");
+        entries.sort((a, b) => {
+          const ta = Number(a[1].CreatedAt ?? a[1].createdAt ?? 0);
+          const tb = Number(b[1].CreatedAt ?? b[1].createdAt ?? 0);
+          return tb - ta;
+        });
+        for (const [jobId, paxJob] of entries.slice(0, 15)) {
+          const companyId = String(paxJob.CompanyId || paxJob.companyId || "").trim();
+          if (!companyId) continue;
+          const ok = await resumeActiveRide(companyId, jobId);
+          if (ok) break;
         }
       })();
     });
     return () => unsub();
-  }, [authUser?.uid, ensureTripInHistory]);
+  }, [authUser?.uid, hydrateReady]);
 
   // Re-attach RTDB listeners after rehydrate (or if startRide listeners were lost).
   useEffect(() => {
@@ -1894,6 +1965,12 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
     const destination = ride.destination.location;
 
     const RTDB_STATUS_MAP: Record<string, RideStatus> = {
+      Waiting: "searching", waiting: "searching",
+      Pending: "searching", pending: "searching",
+      Queued: "searching", queued: "searching",
+      Offered: "searching", offered: "searching",
+      Assigned: "confirmed", assigned: "confirmed",
+      Accepted: "confirmed", accepted: "confirmed",
       Picking: "on_the_way", picking: "on_the_way",
       Enroute: "on_the_way", enroute: "on_the_way",
       Arrived: "arrived", arrived: "arrived",
@@ -1910,44 +1987,43 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       completed: ["Trip complete!", "Please rate your driver", "success"],
     };
 
-    const onSnap = (snap: { exists(): boolean; val(): unknown }, source: string) => {
+    const onSnap = (snap: { exists(): boolean; val(): unknown }) => {
       if (!snap.exists()) return;
       const d = snap.val() as Record<string, unknown>;
       const rawStatus = String(d.Status ?? d.status ?? d.BookingStatus ?? d.bookingStatus ?? "").trim();
-      const rawStatusLower = rawStatus.toLowerCase();
+      const rawStatusLower = rawStatus.toLowerCase().replace(/\s+/g, "");
       const driverDisplayName = String(
         d.DriverName ?? d.driverName ?? d.AssignedDriverName ?? "",
       ).trim();
       const driverIdOnly = String(d.DriverId ?? d.driverId ?? "").trim();
-      if (driverDisplayName || (driverIdOnly && driverIdOnly !== "0")) {
+      if (driverDisplayName || (driverIdOnly && driverIdOnly !== "0" && driverIdOnly !== "-1")) {
         const niceName = driverDisplayName || `Driver ${driverIdOnly}`;
         setActiveRide((prev) => {
-          if (!prev || prev.status === "confirmed" || prev.status === "on_the_way" || prev.status === "arrived" || prev.status === "in_progress") {
-            if (!prev) return prev;
-            if (prev.driver?.name === niceName && prev.status !== "searching") return prev;
-            dispatchOverrideRef.current = true;
+          if (!prev) return prev;
+          if (prev.driver?.name === niceName && prev.status !== "searching") return prev;
+          dispatchOverrideRef.current = true;
+          if (prev.status === "searching") {
             setTimeout(() => notify("Driver Found!", `${niceName} has been assigned to your ride.`, "success"), 0);
-            return {
-              ...prev,
-              status: prev.status === "searching" ? "confirmed" : prev.status,
-              searchPhase: undefined,
-              driver: {
-                name: niceName,
-                rating: prev.driver?.rating ?? 4.8,
-                cab: String(d.VehicleId ?? d.vehicleId ?? prev.driver?.cab ?? "Vehicle"),
-                plate: String(d.Plate ?? d.plate ?? prev.driver?.plate ?? "—"),
-                color: prev.driver?.color ?? "",
-                location: prev.driver?.location ?? pickup,
-              },
-              acceptedAt: prev.acceptedAt ?? Date.now(),
-            };
           }
-          return prev;
+          return {
+            ...prev,
+            status: prev.status === "searching" ? "confirmed" : prev.status,
+            searchPhase: undefined,
+            driver: {
+              name: niceName,
+              rating: prev.driver?.rating ?? 4.8,
+              cab: String(d.VehicleId ?? d.vehicleId ?? prev.driver?.cab ?? "Vehicle"),
+              plate: String(d.Plate ?? d.plate ?? prev.driver?.plate ?? "—"),
+              color: prev.driver?.color ?? "",
+              location: prev.driver?.location ?? pickup,
+            },
+            acceptedAt: prev.acceptedAt ?? Date.now(),
+          };
         });
       }
-      const ignore = new Set(["waiting", "queued", "pendingpayment", "pending", "offered"]);
-      if (rawStatus && !ignore.has(rawStatusLower)) {
-        const mapped = RTDB_STATUS_MAP[rawStatus] || RTDB_STATUS_MAP[rawStatusLower];
+      // Only ignore unpaid card holds — Waiting/Pending/Offered are live pool states.
+      if (rawStatus && rawStatusLower !== "pendingpayment") {
+        const mapped = RTDB_STATUS_MAP[rawStatus] || RTDB_STATUS_MAP[rawStatus.toLowerCase()];
         if (mapped === "cancelled") {
           setActiveRide((prev) => {
             if (!prev || prev.status === "cancelled") return prev;
@@ -1967,13 +2043,21 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
         } else if (mapped) {
           setActiveRide((prev) => {
             if (!prev || prev.status === mapped) return prev;
+            const rank: Record<string, number> = {
+              searching: 0,
+              confirmed: 1,
+              on_the_way: 2,
+              arrived: 3,
+              in_progress: 4,
+              completed: 5,
+            };
+            if ((rank[mapped] ?? 0) < (rank[prev.status] ?? 0)) return prev;
             const n = STATUS_NOTIFY[mapped];
-            if (n) setTimeout(() => notify(n[0], n[1], n[2]), 0);
+            if (n && mapped !== "searching") setTimeout(() => notify(n[0], n[1], n[2]), 0);
             return { ...prev, status: mapped };
           });
         }
       }
-      // Recall
       if (String(d.RecallStatus ?? "") === "Recalled") {
         setActiveRide((prev) => {
           if (!prev || prev.status === "searching") return prev;
@@ -1994,16 +2078,16 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
 
     const pendingRef = rtdbRef(rtdb, `pendingjobs/${companyId}/${firestoreId}`);
     rtdbJobRef.current = pendingRef;
-    rtdbOnValue(pendingRef, (s) => onSnap(s, "pendingjobs"));
+    rtdbOnValue(pendingRef, onSnap);
     rtdbAllbookingsRef.current = rtdbRef(rtdb, `allbookings/${companyId}/${firestoreId}`);
-    rtdbOnValue(rtdbAllbookingsRef.current, (s) => onSnap(s, "allbookings"));
+    rtdbOnValue(rtdbAllbookingsRef.current, onSnap);
     rtdbRideStatusRef.current = rtdbRef(rtdb, `rideStatus/${companyId}/${firestoreId}`);
-    rtdbOnValue(rtdbRideStatusRef.current, (s) => onSnap(s, "rideStatus"));
+    rtdbOnValue(rtdbRideStatusRef.current, onSnap);
     listenToRideStatus(companyId, firestoreId, pickup, destination);
 
     return () => {
       if (listenersWiredForRef.current === key) {
-        /* keep live until clearRide / next wire — startRide may replace */
+        /* keep live until clearRide / next wire */
       }
     };
   }, [activeRide?.firestoreId, activeRide?.companyId]);
@@ -2033,6 +2117,7 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
         markPaymentConfirmed,
         signalImComing,
         hydrateReady,
+        resumeActiveRide,
       }}
     >
       {children}

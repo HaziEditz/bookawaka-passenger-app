@@ -1,6 +1,6 @@
 /**
- * Rebuild ActiveRide / history payloads from Passengerjobs + allbookings nodes.
- * Passengerjobs status is often stale (stuck PendingPayment); prefer allbookings Status.
+ * Rebuild ActiveRide / history payloads from Passengerjobs + allbookings + pendingjobs.
+ * Passengerjobs status is often stale (stuck PendingPayment); prefer pendingjobs, then allbookings.
  */
 import type { ActiveRide, RideStatus, VehicleType, PaymentMethodRide } from "@/context/RideContext";
 import type { HistoryWriteInput } from "@/context/TripContext";
@@ -18,14 +18,22 @@ const TERMINAL = new Set([
   "closed",
 ]);
 
-const LIVE_IGNORE = new Set([
-  "pendingpayment",
-  "pending_payment",
-]);
-
 export function isTerminalJobStatus(raw: unknown): boolean {
   const s = String(raw || "").trim().toLowerCase();
   return TERMINAL.has(s);
+}
+
+/** True when this looks like an unpaid card hold with no live dispatch node. */
+export function isUnpaidCardHold(opts: {
+  statusRaw: unknown;
+  paymentStatus?: unknown;
+  hasPendingJobsNode?: boolean;
+}): boolean {
+  if (opts.hasPendingJobsNode) return false;
+  const st = String(opts.statusRaw || "").trim().toLowerCase().replace(/\s+/g, "");
+  const pay = String(opts.paymentStatus || "").trim().toLowerCase();
+  if (pay === "paid" || pay === "confirmed") return false;
+  return st === "pendingpayment" || st === "pending_payment";
 }
 
 export function mapJobStatusToRide(raw: unknown): RideStatus | null {
@@ -37,7 +45,8 @@ export function mapJobStatusToRide(raw: unknown): RideStatus | null {
     if (lower.includes("no")) return "no_show";
     return "completed";
   }
-  if (LIVE_IGNORE.has(lower.replace(/\s+/g, ""))) return "searching";
+  const compact = lower.replace(/\s+/g, "");
+  if (compact === "pendingpayment" || compact === "pending_payment") return "searching";
   const map: Record<string, RideStatus> = {
     waiting: "searching",
     pending: "searching",
@@ -92,21 +101,50 @@ function paymentFrom(d: Record<string, unknown>): PaymentMethodRide {
   return "cash";
 }
 
-/** Merge Passengerjobs stub with authoritative allbookings row. */
+export function pickAuthoritativeStatus(
+  pendingjobs?: Record<string, unknown> | null,
+  allbookings?: Record<string, unknown> | null,
+  passengerJob?: Record<string, unknown> | null,
+): unknown {
+  const from = (n?: Record<string, unknown> | null) =>
+    n ? n.Status ?? n.status ?? n.BookingStatus ?? n.bookingStatus : undefined;
+  // Live dispatch inbox wins while the job is still offerable / on-trip.
+  const pendSt = from(pendingjobs);
+  if (pendSt != null && String(pendSt).trim() !== "" && !isTerminalJobStatus(pendSt)) {
+    return pendSt;
+  }
+  const abSt = from(allbookings);
+  if (abSt != null && String(abSt).trim() !== "") return abSt;
+  if (pendSt != null && String(pendSt).trim() !== "") return pendSt;
+  return from(passengerJob);
+}
+
+/** Merge Passengerjobs stub with pendingjobs + allbookings. */
 export function buildActiveRideFromJobNodes(
   jobId: string,
   passengerJob: Record<string, unknown>,
   allbookings?: Record<string, unknown> | null,
+  pendingjobs?: Record<string, unknown> | null,
 ): ActiveRide | null {
-  const d = { ...passengerJob, ...(allbookings || {}) };
+  const d = { ...passengerJob, ...(allbookings || {}), ...(pendingjobs || {}) };
   const companyId = String(d.CompanyId || d.companyId || "").trim();
   if (!companyId || !jobId) return null;
-  const statusRaw = allbookings
-    ? allbookings.Status ?? allbookings.status ?? allbookings.BookingStatus
-    : d.Status ?? d.status ?? d.BookingStatus;
+  const statusRaw = pickAuthoritativeStatus(pendingjobs, allbookings, passengerJob);
   if (isTerminalJobStatus(statusRaw)) return null;
+  if (
+    isUnpaidCardHold({
+      statusRaw,
+      paymentStatus: d.PaymentStatus ?? d.paymentStatus,
+      hasPendingJobsNode: !!pendingjobs && Object.keys(pendingjobs).length > 0,
+    })
+  ) {
+    return null;
+  }
   const mapped = mapJobStatusToRide(statusRaw) || "searching";
   const payStatus = String(d.PaymentStatus || d.paymentStatus || "").toLowerCase();
+  const driverName = String(d.DriverName || d.driverName || d.AssignedDriverName || "").trim();
+  const driverId = String(d.DriverId || d.driverId || "").trim();
+  const hasDriver = !!(driverName || (driverId && driverId !== "0" && driverId !== "-1"));
   return {
     id: jobId,
     firestoreId: jobId,
@@ -117,10 +155,21 @@ export function buildActiveRideFromJobNodes(
     vehicleType: (String(d.VehicleType || d.vehicleType || "standard") as VehicleType) || "standard",
     payment: paymentFrom(d),
     fare: Number(d.EstimatedFare ?? d.estimatedFare ?? d.CustomeRate ?? d.fare ?? 0) || 0,
-    status: mapped,
+    status: hasDriver && mapped === "searching" ? "confirmed" : mapped,
     paymentStatus: payStatus === "paid" || payStatus === "confirmed" ? "confirmed" : "pending",
     pickupPin: String(d.PickupPin || d.pickupPin || "") || undefined,
     trackingToken: String(d.trackingToken || d.TrackingToken || "") || undefined,
+    driver: hasDriver
+      ? {
+          name: driverName || `Driver ${driverId}`,
+          rating: 4.8,
+          cab: String(d.VehicleId || d.vehicleId || "Vehicle"),
+          plate: String(d.Plate || d.plate || "—"),
+          color: "",
+          location: placeFrom(d, "pickup").location,
+        }
+      : undefined,
+    acceptedAt: hasDriver ? Date.now() : undefined,
   };
 }
 
