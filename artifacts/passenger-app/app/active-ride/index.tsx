@@ -70,7 +70,7 @@ function searchLabel(phase: SearchPhase | undefined, elapsed: string): string {
 export default function ActiveRideScreen() {
   const colors = useColors();
   const { notify } = useNotification();
-  const { activeRide, driverLocation, cancelRide, addStop, clearRide, signalImComing } = useRide();
+  const { activeRide, driverLocation, cancelRide, addStop, clearRide, signalImComing, recordCompletedTripHistory } = useRide();
   const insets = useSafeAreaInsets();
   const elapsed = useElapsedTime(activeRide?.status === "searching");
   const [chatOpen, setChatOpen] = useState(false);
@@ -650,8 +650,12 @@ export default function ActiveRideScreen() {
               <Pressable
                 onPress={() => {
                   setShowCompleteModal(false);
-                  clearRide();
-                  router.replace("/(tabs)");
+                  const snap = activeRide;
+                  void (async () => {
+                    if (snap) await recordCompletedTripHistory(snap);
+                    clearRide();
+                    router.replace("/(tabs)");
+                  })();
                 }}
                 style={[styles.confirmBtn, { backgroundColor: colors.muted, width: "100%" }]}
               >

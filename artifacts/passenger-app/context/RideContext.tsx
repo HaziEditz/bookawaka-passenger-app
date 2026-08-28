@@ -23,11 +23,17 @@ import { useNotification } from "./NotificationContext";
 import { alertPassengerDriverArrived } from "@/lib/arrivalAlert";
 import { createJobId } from "@/lib/jobApi";
 import { useAuth } from "@/context/AuthContext";
+import { useTripHistory, type HistoryWriteInput, type PaymentMethod } from "@/context/TripContext";
 import {
   createBookingOnServer,
   cancelBookingOnServer,
   editBookingOnServer,
 } from "@/lib/bookingApi";
+import {
+  clearActiveRideSnapshot,
+  loadActiveRideSnapshot,
+  saveActiveRideSnapshot,
+} from "@/lib/activeRidePersist";
 
 export type RideStatus =
   | "idle"
@@ -219,6 +225,8 @@ interface RideContextType {
   completeRide: (rating: number, tip: number) => Promise<void>;
   /** Clear local ride without writing completion (Skip on complete modal). */
   clearRide: () => void;
+  /** Persist completed trip to History (idempotent by booking id). */
+  recordCompletedTripHistory: (ride?: ActiveRide | null) => Promise<void>;
   setRideStatus: (status: RideStatus) => void;
   /** Mark local ride payment as confirmed after Stripe verify-and-dispatch. */
   markPaymentConfirmed: () => void;
@@ -544,9 +552,31 @@ export function computeCancelPolicy(
   };
 }
 
+function historyPaymentMethod(payment: PaymentMethodRide): PaymentMethod {
+  if (payment === "wallet") return "wallet";
+  if (payment === "cash") return "cash";
+  if (payment === "account" || payment === "business_account" || payment === "acc") return "account";
+  if (payment === "gift_card") return "gift_card";
+  return "card";
+}
+
+function historyPayloadFromRide(ride: ActiveRide): HistoryWriteInput {
+  return {
+    serviceType: "taxi",
+    status: ride.status === "cancelled" || ride.status === "no_show" ? "cancelled" : "completed",
+    from: ride.pickup?.address,
+    to: ride.destination?.address,
+    price: Number(ride.fare) || 0,
+    paymentMethod: historyPaymentMethod(ride.payment),
+    driverName: ride.driver?.name,
+    bookingId: String(ride.firestoreId || ride.id || ""),
+  };
+}
+
 function RideProviderInner({ children }: { children: React.ReactNode }) {
   const { notify } = useNotification();
   const { updateWallet, user: authUser } = useAuth();
+  const { ensureTripInHistory } = useTripHistory();
   const [activeRide, setActiveRide] = useState<ActiveRide | null>(null);
   const [driverLocation, setDriverLocation] = useState<LatLng | null>(null);
   const simulationRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -560,6 +590,8 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
   const dispatchOverrideRef = useRef(false);
   const activeRideRef = useRef<ActiveRide | null>(null);
   activeRideRef.current = activeRide;
+  const listenersWiredForRef = useRef<string>("");
+  const historyWrittenRef = useRef<Set<string>>(new Set());
   // Stores the pending job immediately after IDs are allocated — before React state settles —
   // so abortRide can cancel RTDB even if activeRide state hasn't propagated yet.
   const pendingJobRef = useRef<{ companyId: string; jobId: string } | null>(null);
@@ -1212,7 +1244,7 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       // Log what the dispatcher actually sent so we can see the real field names
       console.log(`[Dispatch:${source}] keys=${Object.keys(d).join(",")} Status=${d.Status ?? d.status} DriverName=${d.DriverName ?? d.driverName ?? d.drivername} DriverId=${d.DriverId ?? d.driverId ?? d.driverid}`);
 
-      const rawStatus = String(d.Status ?? d.status ?? "").trim();
+      const rawStatus = String(d.Status ?? d.status ?? d.BookingStatus ?? d.bookingStatus ?? "").trim();
       const rawStatusLower = rawStatus.toLowerCase();
 
       // ── Update search phase so the passenger sees live queue status ──────
@@ -1448,6 +1480,12 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
                 if (mapped === "arrived") void alertPassengerDriverArrived();
               }, 0);
             }
+            if (mapped === "completed") {
+              const snap = { ...prev, status: "completed" as const };
+              setTimeout(() => {
+                void recordCompletedTripHistory(snap);
+              }, 0);
+            }
             return { ...prev, status: mapped };
           });
         }
@@ -1479,6 +1517,7 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
     //   a) The real dispatcher assigns a driver, OR
     //   b) The passenger manually cancels via the Cancel button.
     // The passenger can see live queue status on the active-ride screen.
+    listenersWiredForRef.current = `${companyId}/${firestoreId}`;
 
     return firestoreId;
   };
@@ -1560,6 +1599,8 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       }).catch((e) => console.warn("[BookingAPI] Abort cancel failed:", (e as Error).message));
     }
     pendingJobRef.current = null;
+    listenersWiredForRef.current = "";
+    void clearActiveRideSnapshot();
     setActiveRide(null);
     setDriverLocation(null);
     dispatchOverrideRef.current = false;
@@ -1603,12 +1644,23 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
     notify("Stop Added", `${stop.place.address.split(",")[0]} — fare updated`, "info");
   };
 
+  const recordCompletedTripHistory = async (ride?: ActiveRide | null) => {
+    const r = ride ?? activeRideRef.current;
+    if (!r?.firestoreId) return;
+    const bid = String(r.firestoreId);
+    if (historyWrittenRef.current.has(bid)) return;
+    historyWrittenRef.current.add(bid);
+    await ensureTripInHistory(historyPayloadFromRide({ ...r, status: "completed" }));
+  };
+
   const clearRide = () => {
     stopMockDriverTimer();
     stopSimulation();
     stopFirestoreListener();
     stopRtdbJobListener();
     pendingJobRef.current = null;
+    listenersWiredForRef.current = "";
+    void clearActiveRideSnapshot();
     setActiveRide(null);
     setDriverLocation(null);
     dispatchOverrideRef.current = false;
@@ -1660,6 +1712,9 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
     // Snapshot first, then clear immediately so Home never keeps showing Active Ride
     // while Firestore/history writes are still in flight.
     const ride = activeRideRef.current;
+    if (ride) {
+      void recordCompletedTripHistory(ride);
+    }
     clearRide();
     try {
       if (ride?.firestoreId && ride?.companyId) {
@@ -1721,6 +1776,156 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
   };
 
   useEffect(() => {
+    void saveActiveRideSnapshot(activeRide);
+  }, [activeRide]);
+
+  // Cold start / OTA reload — restore in-memory ride so Active Ride + listeners can resume.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (activeRideRef.current) return;
+      const snap = await loadActiveRideSnapshot();
+      if (cancelled || !snap?.firestoreId || !snap.companyId) return;
+      pendingJobRef.current = { companyId: snap.companyId, jobId: snap.firestoreId };
+      setActiveRide(snap);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Re-attach RTDB listeners after rehydrate (or if startRide listeners were lost).
+  useEffect(() => {
+    const ride = activeRide;
+    if (!ride?.firestoreId || !ride.companyId) return;
+    if (ride.status === "completed" || ride.status === "cancelled" || ride.status === "no_show") return;
+    const key = `${ride.companyId}/${ride.firestoreId}`;
+    if (listenersWiredForRef.current === key && rtdbAllbookingsRef.current) return;
+
+    stopRtdbJobListener();
+    listenersWiredForRef.current = key;
+    const companyId = ride.companyId;
+    const firestoreId = ride.firestoreId;
+    const pickup = ride.pickup.location;
+    const destination = ride.destination.location;
+
+    const RTDB_STATUS_MAP: Record<string, RideStatus> = {
+      Picking: "on_the_way", picking: "on_the_way",
+      Enroute: "on_the_way", enroute: "on_the_way",
+      Arrived: "arrived", arrived: "arrived",
+      Busy: "in_progress", busy: "in_progress",
+      OnBoard: "in_progress", onboard: "in_progress", Active: "in_progress", active: "in_progress",
+      Done: "completed", Completed: "completed", completed: "completed",
+      Cancelled: "cancelled", cancelled: "cancelled",
+      "No Show": "no_show", NoShow: "no_show", noshow: "no_show",
+    };
+    const STATUS_NOTIFY: Partial<Record<RideStatus, [string, string, "success" | "info" | "warning" | "error"]>> = {
+      on_the_way: ["Driver is on the way", "Your driver is heading to the pickup location", "info"],
+      arrived: ["Driver has arrived!", "Your driver is waiting at the pickup point", "success"],
+      in_progress: ["Trip started", "You're on your way!", "success"],
+      completed: ["Trip complete!", "Please rate your driver", "success"],
+    };
+
+    const onSnap = (snap: { exists(): boolean; val(): unknown }, source: string) => {
+      if (!snap.exists()) return;
+      const d = snap.val() as Record<string, unknown>;
+      const rawStatus = String(d.Status ?? d.status ?? d.BookingStatus ?? d.bookingStatus ?? "").trim();
+      const rawStatusLower = rawStatus.toLowerCase();
+      const driverDisplayName = String(
+        d.DriverName ?? d.driverName ?? d.AssignedDriverName ?? "",
+      ).trim();
+      const driverIdOnly = String(d.DriverId ?? d.driverId ?? "").trim();
+      if (driverDisplayName || (driverIdOnly && driverIdOnly !== "0")) {
+        const niceName = driverDisplayName || `Driver ${driverIdOnly}`;
+        setActiveRide((prev) => {
+          if (!prev || prev.status === "confirmed" || prev.status === "on_the_way" || prev.status === "arrived" || prev.status === "in_progress") {
+            if (!prev) return prev;
+            if (prev.driver?.name === niceName && prev.status !== "searching") return prev;
+            dispatchOverrideRef.current = true;
+            setTimeout(() => notify("Driver Found!", `${niceName} has been assigned to your ride.`, "success"), 0);
+            return {
+              ...prev,
+              status: prev.status === "searching" ? "confirmed" : prev.status,
+              searchPhase: undefined,
+              driver: {
+                name: niceName,
+                rating: prev.driver?.rating ?? 4.8,
+                cab: String(d.VehicleId ?? d.vehicleId ?? prev.driver?.cab ?? "Vehicle"),
+                plate: String(d.Plate ?? d.plate ?? prev.driver?.plate ?? "—"),
+                color: prev.driver?.color ?? "",
+                location: prev.driver?.location ?? pickup,
+              },
+              acceptedAt: prev.acceptedAt ?? Date.now(),
+            };
+          }
+          return prev;
+        });
+      }
+      const ignore = new Set(["waiting", "queued", "pendingpayment", "pending", "offered"]);
+      if (rawStatus && !ignore.has(rawStatusLower)) {
+        const mapped = RTDB_STATUS_MAP[rawStatus] || RTDB_STATUS_MAP[rawStatusLower];
+        if (mapped === "cancelled") {
+          setActiveRide((prev) => {
+            if (!prev || prev.status === "cancelled") return prev;
+            setTimeout(() => notify("Booking Cancelled", "Your booking was cancelled.", "warning"), 0);
+            return { ...prev, status: "cancelled" };
+          });
+        } else if (mapped === "completed") {
+          setActiveRide((prev) => {
+            if (!prev || prev.status === "completed") return prev;
+            const snapRide = { ...prev, status: "completed" as const };
+            setTimeout(() => {
+              notify("Trip complete!", "Please rate your driver", "success");
+              void recordCompletedTripHistory(snapRide);
+            }, 0);
+            return snapRide;
+          });
+        } else if (mapped) {
+          setActiveRide((prev) => {
+            if (!prev || prev.status === mapped) return prev;
+            const n = STATUS_NOTIFY[mapped];
+            if (n) setTimeout(() => notify(n[0], n[1], n[2]), 0);
+            return { ...prev, status: mapped };
+          });
+        }
+      }
+      // Recall
+      if (String(d.RecallStatus ?? "") === "Recalled") {
+        setActiveRide((prev) => {
+          if (!prev || prev.status === "searching") return prev;
+          setTimeout(
+            () =>
+              notify(
+                "Driver Recalled",
+                String(d.message || "Your booking was returned to the queue. Finding another driver."),
+                "warning",
+              ),
+            0,
+          );
+          dispatchOverrideRef.current = false;
+          return { ...prev, status: "searching", driver: undefined, eta: null, searchPhase: "waiting" };
+        });
+      }
+    };
+
+    const pendingRef = rtdbRef(rtdb, `pendingjobs/${companyId}/${firestoreId}`);
+    rtdbJobRef.current = pendingRef;
+    rtdbOnValue(pendingRef, (s) => onSnap(s, "pendingjobs"));
+    rtdbAllbookingsRef.current = rtdbRef(rtdb, `allbookings/${companyId}/${firestoreId}`);
+    rtdbOnValue(rtdbAllbookingsRef.current, (s) => onSnap(s, "allbookings"));
+    rtdbRideStatusRef.current = rtdbRef(rtdb, `rideStatus/${companyId}/${firestoreId}`);
+    rtdbOnValue(rtdbRideStatusRef.current, (s) => onSnap(s, "rideStatus"));
+    listenToRideStatus(companyId, firestoreId, pickup, destination);
+
+    return () => {
+      // Only tear down if this effect's key is still current (avoid clobbering a newer ride).
+      if (listenersWiredForRef.current === key) {
+        /* keep live until clearRide / next wire — startRide may replace */
+      }
+    };
+  }, [activeRide?.firestoreId, activeRide?.companyId]);
+
+  useEffect(() => {
     return () => {
       stopMockDriverTimer();
       stopSimulation();
@@ -1731,7 +1936,20 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
 
   return (
     <RideContext.Provider
-      value={{ activeRide, driverLocation, startRide, cancelRide, abortRide, addStop, completeRide, clearRide, setRideStatus, markPaymentConfirmed, signalImComing }}
+      value={{
+        activeRide,
+        driverLocation,
+        startRide,
+        cancelRide,
+        abortRide,
+        addStop,
+        completeRide,
+        clearRide,
+        recordCompletedTripHistory,
+        setRideStatus,
+        markPaymentConfirmed,
+        signalImComing,
+      }}
     >
       {children}
     </RideContext.Provider>

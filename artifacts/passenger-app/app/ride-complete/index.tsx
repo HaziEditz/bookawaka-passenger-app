@@ -71,7 +71,7 @@ export default function RideCompleteScreen() {
     );
   }
 
-  const { pickup, destination, driver, fare, payment, rideshare, passengerCount } = ride;
+  const { pickup, destination, driver, fare, payment, rideshare, passengerCount, firestoreId, id } = ride;
   const splitFare = rideshare && passengerCount && passengerCount > 1 ? Math.round((fare / passengerCount) * 100) / 100 : null;
   const yourFare = splitFare ?? fare;
   const total = yourFare + tip;
@@ -124,6 +124,7 @@ export default function RideCompleteScreen() {
               : "card",
             driverName: driver?.name,
             driverRating: rating,
+            bookingId: firestoreId || id,
           }),
           4000,
         );

@@ -3,11 +3,13 @@ import {
   collection,
   deleteDoc,
   doc,
+  getDocs,
   limit,
   onSnapshot,
   orderBy,
   query,
   serverTimestamp,
+  setDoc,
   where,
 } from "firebase/firestore";
 import React, { createContext, useContext, useEffect, useState } from "react";
@@ -32,15 +34,28 @@ export interface HistoryItem {
   date: string;
   driverName?: string;
   driverRating?: number;
+  bookingId?: string;
 }
+
+export type HistoryWriteInput = Omit<HistoryItem, "id" | "date"> & {
+  bookingId?: string;
+};
 
 interface TripContextType {
   history: HistoryItem[];
-  addToHistory: (item: Omit<HistoryItem, "id" | "date">) => Promise<void>;
+  addToHistory: (item: HistoryWriteInput) => Promise<void>;
+  /** Idempotent write — safe on Done, Skip, or server-driven complete. */
+  ensureTripInHistory: (item: HistoryWriteInput) => Promise<void>;
   clearHistory: () => Promise<void>;
 }
 
 const TripContext = createContext<TripContextType | null>(null);
+
+function historyDocId(userId: string, bookingId?: string): string | null {
+  const bid = String(bookingId || "").trim();
+  if (!bid) return null;
+  return `${userId}_${bid}`;
+}
 
 export function TripProvider({ children }: { children: React.ReactNode }) {
   const [history, setHistory] = useState<HistoryItem[]>([]);
@@ -81,6 +96,7 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
           date: data.createdAt?.toDate?.()?.toISOString() ?? new Date().toISOString(),
           driverName: data.driverName,
           driverRating: data.driverRating,
+          bookingId: data.bookingId ? String(data.bookingId) : undefined,
         };
       });
       setHistory(items);
@@ -88,25 +104,39 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
     return () => unsub();
   }, [userId]);
 
-  const addToHistory = async (item: Omit<HistoryItem, "id" | "date">) => {
+  const addToHistory = async (item: HistoryWriteInput) => {
+    await ensureTripInHistory(item);
+  };
+
+  const ensureTripInHistory = async (item: HistoryWriteInput) => {
     if (!userId) return;
-    await addDoc(collection(db, "trips"), {
+    const payload = {
       ...item,
       userId,
+      bookingId: item.bookingId ? String(item.bookingId) : null,
       createdAt: serverTimestamp(),
-    });
+    };
+    const id = historyDocId(userId, item.bookingId);
+    try {
+      if (id) {
+        await setDoc(doc(db, "trips", id), payload, { merge: true });
+        return;
+      }
+      await addDoc(collection(db, "trips"), payload);
+    } catch (e) {
+      console.warn("[TripHistory] ensureTripInHistory failed:", e);
+    }
   };
 
   const clearHistory = async () => {
     if (!userId) return;
     const q = query(collection(db, "trips"), where("userId", "==", userId));
-    const { getDocs } = await import("firebase/firestore");
     const snap = await getDocs(q);
     await Promise.all(snap.docs.map((d) => deleteDoc(doc(db, "trips", d.id))));
   };
 
   return (
-    <TripContext.Provider value={{ history, addToHistory, clearHistory }}>
+    <TripContext.Provider value={{ history, addToHistory, ensureTripInHistory, clearHistory }}>
       {children}
     </TripContext.Provider>
   );
