@@ -70,7 +70,7 @@ function searchLabel(phase: SearchPhase | undefined, elapsed: string): string {
 export default function ActiveRideScreen() {
   const colors = useColors();
   const { notify } = useNotification();
-  const { activeRide, driverLocation, cancelRide, addStop, clearRide, signalImComing, recordCompletedTripHistory } = useRide();
+  const { activeRide, driverLocation, cancelRide, addStop, clearRide, signalImComing, recordCompletedTripHistory, hydrateReady } = useRide();
   const insets = useSafeAreaInsets();
   const elapsed = useElapsedTime(activeRide?.status === "searching");
   const [chatOpen, setChatOpen] = useState(false);
@@ -88,11 +88,12 @@ export default function ActiveRideScreen() {
     return () => clearTimeout(t);
   }, []);
 
+  // Wait for cold-start / Passengerjobs recover before treating null as "no ride".
   useEffect(() => {
-    if (settled && !activeRide) {
+    if (settled && hydrateReady && !activeRide) {
       router.replace("/(tabs)");
     }
-  }, [settled, activeRide]);
+  }, [settled, hydrateReady, activeRide]);
 
   // Show ride-complete modal when dispatcher/driver marks the trip done.
   // Uses a modal (not auto-navigate) so an accidental "complete" from the
@@ -138,7 +139,9 @@ export default function ActiveRideScreen() {
   if (!activeRide) {
     return (
       <View style={[styles.container, { backgroundColor: colors.background, alignItems: "center", justifyContent: "center" }]}>
-        <Text style={{ color: colors.mutedForeground, fontFamily: "Inter_500Medium" }}>Returning home…</Text>
+        <Text style={{ color: colors.mutedForeground, fontFamily: "Inter_500Medium" }}>
+          {hydrateReady ? "Returning home…" : "Restoring your trip…"}
+        </Text>
       </View>
     );
   }

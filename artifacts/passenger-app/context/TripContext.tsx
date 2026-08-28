@@ -109,14 +109,18 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
   };
 
   const ensureTripInHistory = async (item: HistoryWriteInput) => {
-    if (!userId) return;
+    const uid = userId || auth.currentUser?.uid || null;
+    if (!uid) {
+      console.warn("[TripHistory] ensureTripInHistory skipped — no auth uid");
+      return;
+    }
     const payload = {
       ...item,
-      userId,
+      userId: uid,
       bookingId: item.bookingId ? String(item.bookingId) : null,
       createdAt: serverTimestamp(),
     };
-    const id = historyDocId(userId, item.bookingId);
+    const id = historyDocId(uid, item.bookingId);
     try {
       if (id) {
         await setDoc(doc(db, "trips", id), payload, { merge: true });

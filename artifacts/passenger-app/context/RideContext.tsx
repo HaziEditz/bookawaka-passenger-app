@@ -34,6 +34,11 @@ import {
   loadActiveRideSnapshot,
   saveActiveRideSnapshot,
 } from "@/lib/activeRidePersist";
+import {
+  buildActiveRideFromJobNodes,
+  historyFromJobNodes,
+  isTerminalJobStatus,
+} from "@/lib/passengerJobRecover";
 
 export type RideStatus =
   | "idle"
@@ -232,6 +237,8 @@ interface RideContextType {
   markPaymentConfirmed: () => void;
   /** One-shot extension of the no-show wait after driver Arrived. */
   signalImComing: () => Promise<boolean>;
+  /** True once cold-start snapshot + Passengerjobs recover attempt finished. */
+  hydrateReady: boolean;
 }
 
 const RideContext = createContext<RideContextType | null>(null);
@@ -579,6 +586,7 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
   const { ensureTripInHistory } = useTripHistory();
   const [activeRide, setActiveRide] = useState<ActiveRide | null>(null);
   const [driverLocation, setDriverLocation] = useState<LatLng | null>(null);
+  const [hydrateReady, setHydrateReady] = useState(false);
   const simulationRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const mockDriverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const progressRef = useRef(0);
@@ -893,6 +901,8 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
     };
     if (!params.scheduledAt) {
       setActiveRide(ride);
+      // Must land before Stripe Custom Tab / process death — effect alone races Android kills.
+      await saveActiveRideSnapshot(ride);
       // Card holds: don't claim "searching" until Stripe confirms — payment can still fail.
       if (params.payment !== "card") {
         notify("Searching for driver...", "Looking for the nearest driver for you.", "info");
@@ -1783,16 +1793,90 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      if (activeRideRef.current) return;
-      const snap = await loadActiveRideSnapshot();
-      if (cancelled || !snap?.firestoreId || !snap.companyId) return;
-      pendingJobRef.current = { companyId: snap.companyId, jobId: snap.firestoreId };
-      setActiveRide(snap);
+      try {
+        if (!activeRideRef.current) {
+          const snap = await loadActiveRideSnapshot();
+          if (!cancelled && snap?.firestoreId && snap.companyId) {
+            pendingJobRef.current = { companyId: snap.companyId, jobId: snap.firestoreId };
+            setActiveRide(snap);
+          }
+        }
+      } finally {
+        if (!cancelled) setHydrateReady(true);
+      }
     })();
     return () => {
       cancelled = true;
     };
   }, []);
+
+  // Authoritative recover: Passengerjobs index + allbookings Status (Passengerjobs is often stale).
+  useEffect(() => {
+    const uid = auth.currentUser?.uid;
+    if (!uid) return;
+    const treeRef = rtdbRef(rtdb, `Passengerjobs/${uid}`);
+    const unsub = rtdbOnValue(treeRef, (snap) => {
+      void (async () => {
+        if (!snap.exists()) return;
+        const tree = snap.val() as Record<string, Record<string, unknown>>;
+        const entries = Object.entries(tree || {}).filter(([, v]) => v && typeof v === "object");
+        // Newest first
+        entries.sort((a, b) => {
+          const ta = Number(a[1].CreatedAt ?? a[1].createdAt ?? 0);
+          const tb = Number(b[1].CreatedAt ?? b[1].createdAt ?? 0);
+          return tb - ta;
+        });
+
+        let restoredLive = false;
+        for (const [jobId, paxJob] of entries.slice(0, 25)) {
+          const companyId = String(paxJob.CompanyId || paxJob.companyId || "").trim();
+          if (!companyId) continue;
+          let ab: Record<string, unknown> | null = null;
+          try {
+            const abSnap = await rtdbGet(rtdbRef(rtdb, `allbookings/${companyId}/${jobId}`));
+            if (abSnap.exists()) ab = abSnap.val() as Record<string, unknown>;
+          } catch {
+            ab = null;
+          }
+
+          const statusRaw = ab
+            ? ab.Status ?? ab.status ?? ab.BookingStatus
+            : paxJob.Status ?? paxJob.status ?? paxJob.BookingStatus;
+
+          if (isTerminalJobStatus(statusRaw)) {
+            const hist = historyFromJobNodes(jobId, paxJob, ab);
+            if (hist) {
+              void ensureTripInHistory(hist);
+            }
+            continue;
+          }
+
+          // Restore at most one live ride if memory/snapshot empty.
+          if (!restoredLive && !activeRideRef.current) {
+            const ride = buildActiveRideFromJobNodes(jobId, paxJob, ab);
+            if (ride) {
+              // Skip unpaid card holds still PendingPayment with no paid flag on allbookings.
+              const pay = String(
+                (ab && (ab.PaymentStatus || ab.paymentStatus)) ||
+                  paxJob.PaymentStatus ||
+                  paxJob.paymentStatus ||
+                  "",
+              ).toLowerCase();
+              const st = String(statusRaw || "").toLowerCase();
+              if (st.includes("pendingpayment") && pay !== "paid" && pay !== "confirmed") {
+                continue;
+              }
+              pendingJobRef.current = { companyId: ride.companyId, jobId: ride.firestoreId };
+              setActiveRide(ride);
+              void saveActiveRideSnapshot(ride);
+              restoredLive = true;
+            }
+          }
+        }
+      })();
+    });
+    return () => unsub();
+  }, [authUser?.uid, ensureTripInHistory]);
 
   // Re-attach RTDB listeners after rehydrate (or if startRide listeners were lost).
   useEffect(() => {
@@ -1918,7 +2002,6 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
     listenToRideStatus(companyId, firestoreId, pickup, destination);
 
     return () => {
-      // Only tear down if this effect's key is still current (avoid clobbering a newer ride).
       if (listenersWiredForRef.current === key) {
         /* keep live until clearRide / next wire — startRide may replace */
       }
@@ -1949,6 +2032,7 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
         setRideStatus,
         markPaymentConfirmed,
         signalImComing,
+        hydrateReady,
       }}
     >
       {children}

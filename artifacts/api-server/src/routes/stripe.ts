@@ -10,6 +10,20 @@ function extractToken(req: Request): string | null {
   return null;
 }
 
+/** Decode Firebase ID token payload (no signature verify — RTDB auth= already gates writes). */
+function uidFromIdToken(idToken: string): string | null {
+  try {
+    const part = idToken.split(".")[1];
+    if (!part) return null;
+    const json = Buffer.from(part.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
+    const payload = JSON.parse(json) as { user_id?: string; sub?: string; uid?: string };
+    const uid = String(payload.user_id || payload.sub || payload.uid || "").trim();
+    return uid || null;
+  } catch {
+    return null;
+  }
+}
+
 async function rtdbGet(path: string, idToken: string): Promise<any> {
   const res = await fetch(`${RTDB_BASE}/${path}.json?auth=${idToken}`);
   if (!res.ok) {
@@ -230,6 +244,17 @@ router.post("/stripe/verify-and-dispatch", async (req: Request, res: Response) =
       return;
     }
 
+    const authUid = uidFromIdToken(idToken);
+    const existingPassengerUid = String(
+      existing.passengerId || existing.PassengerId || existing.passengerUid || existing.PassengerUid || "",
+    ).trim();
+    // Prefer auth uid — allbookings often loses passengerId after dispatch fanout SETs.
+    const passengerUid =
+      (authUid && authUid !== "guest" ? authUid : "") ||
+      (existingPassengerUid && existingPassengerUid !== "guest" && existingPassengerUid.length >= 20
+        ? existingPassengerUid
+        : "");
+
     const existingSt = String(existing.Status ?? existing.status ?? "").toLowerCase();
     if (
       existingSt === "cancelled" ||
@@ -237,11 +262,25 @@ router.post("/stripe/verify-and-dispatch", async (req: Request, res: Response) =
       existingSt === "completed" ||
       existingSt === "closed"
     ) {
+      // Still heal Passengerjobs if it was left on PendingPayment.
+      if (passengerUid) {
+        await rtdbPatch(
+          `Passengerjobs/${passengerUid}/${bookingId}`,
+          {
+            Status: existing.Status ?? existing.status,
+            status: existing.status ?? existing.Status,
+            paymentStatus: existing.paymentStatus ?? existing.PaymentStatus ?? "paid",
+            PaymentStatus: existing.PaymentStatus ?? existing.paymentStatus ?? "paid",
+            passengerId: passengerUid,
+          },
+          idToken,
+        ).catch(() => {});
+      }
       res.json({ ok: true, alreadyDispatched: true, terminal: existingSt });
       return;
     }
 
-    if (String(existing.paymentStatus ?? "").toLowerCase() === "paid") {
+    if (String(existing.paymentStatus ?? existing.PaymentStatus ?? "").toLowerCase() === "paid") {
       const pj = await rtdbGet(`pendingjobs/${companyId}/${bookingId}`, idToken).catch(() => null);
       if (!pj) {
         const scheduledMs = Number(existing.ScheduledFor ?? existing.scheduledFor ?? 0);
@@ -249,6 +288,22 @@ router.post("/stripe/verify-and-dispatch", async (req: Request, res: Response) =
         if (!isScheduled) {
           await rtdbPut(`pendingjobs/${companyId}/${bookingId}`, existing, idToken);
         }
+      }
+      if (passengerUid) {
+        const st = String(existing.Status ?? existing.status ?? "Waiting");
+        await rtdbPatch(
+          `Passengerjobs/${passengerUid}/${bookingId}`,
+          {
+            Status: st,
+            status: st,
+            paymentStatus: "paid",
+            PaymentStatus: "paid",
+            isPrePaid: true,
+            IsPrePaid: true,
+            passengerId: passengerUid,
+          },
+          idToken,
+        ).catch(() => {});
       }
       res.json({ ok: true, alreadyDispatched: true });
       return;
@@ -279,6 +334,10 @@ router.post("/stripe/verify-and-dispatch", async (req: Request, res: Response) =
       BookingSource: existing.BookingSource || existing.Source || "PassengerApp",
       Source: existing.Source || "PassengerApp",
       CreatedBy: existing.CreatedBy || "APP",
+      // Keep Firebase uid on allbookings so dispatch complete can mirror Passengerjobs.
+      ...(passengerUid
+        ? { passengerId: passengerUid, PassengerUid: passengerUid, passengerUid }
+        : {}),
     };
     if (stripeSessionId) {
       paidFields.stripeSessionId = stripeSessionId;
@@ -296,10 +355,12 @@ router.post("/stripe/verify-and-dispatch", async (req: Request, res: Response) =
 
     await rtdbPatch(`allbookings/${companyId}/${bookingId}`, paidFields, idToken);
 
-    const passengerUid =
-      existing.passengerId || existing.PassengerId || existing.passengerUid || null;
     if (passengerUid) {
-      await rtdbPatch(`Passengerjobs/${passengerUid}/${bookingId}`, paidFields, idToken).catch(() => {});
+      await rtdbPatch(`Passengerjobs/${passengerUid}/${bookingId}`, paidFields, idToken).catch((e) => {
+        req.log?.warn?.({ err: (e as Error).message, passengerUid, bookingId }, "Passengerjobs paid patch failed");
+      });
+    } else {
+      req.log?.warn?.({ bookingId, companyId }, "verify-and-dispatch: no passengerUid — Passengerjobs not updated");
     }
 
     if (!isScheduled) {
