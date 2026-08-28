@@ -609,6 +609,98 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       at: new Date().toISOString(),
     }));
   }, []);
+
+  /**
+   * Live RTDB handlers historically only PATCHed an existing activeRide
+   * (`setActiveRide(prev => prev ? … : prev)`). When memory was cleared but
+   * listeners still fired (Assigned/Picking/…), TRACE said "apply" while
+   * activeRide stayed null. Materialize from the live node when missing.
+   */
+  const materializeActiveRideFromLiveSnap = useCallback(
+    (
+      companyId: string,
+      jobId: string,
+      snapData: Record<string, unknown>,
+      source: string,
+    ): boolean => {
+      const cid = String(companyId || "").trim();
+      const bid = String(jobId || "").trim();
+      if (!cid || !bid) return false;
+
+      const cur = activeRideRef.current;
+      if (cur?.firestoreId && String(cur.firestoreId) === bid) return false;
+      if (cur?.firestoreId && String(cur.firestoreId) !== bid) {
+        patchDiag({
+          phase: `live:${source}`,
+          decision: `live ${source}: have Active Ride ${cur.firestoreId} — not replacing with ${bid}`,
+        });
+        return false;
+      }
+
+      const statusRaw = snapData.Status ?? snapData.status ?? snapData.BookingStatus ?? snapData.bookingStatus;
+      if (isTerminalJobStatus(statusRaw)) {
+        patchDiag({
+          phase: `live:${source}`,
+          lastLiveRtdbStatus: `${source}=${String(statusRaw)}`,
+          decision: `live ${source} Status=${String(statusRaw)} — terminal, NOT creating Active Ride`,
+          activeRideJobId: "—",
+          activeRideStatus: "—",
+        });
+        return false;
+      }
+      if (
+        isUnpaidCardHold({
+          statusRaw,
+          paymentStatus: snapData.PaymentStatus ?? snapData.paymentStatus,
+          hasPendingJobsNode: source === "pendingjobs" || source === "reattach",
+        })
+      ) {
+        patchDiag({
+          phase: `live:${source}`,
+          decision: `live ${source} Status=${String(statusRaw ?? "")} — unpaid hold, NOT creating Active Ride`,
+          activeRideJobId: "—",
+          activeRideStatus: "—",
+        });
+        return false;
+      }
+
+      const paxStub: Record<string, unknown> = {
+        CompanyId: cid,
+        companyId: cid,
+        ...snapData,
+      };
+      // Prefer treating the live snap as pendingjobs so Assigned/Picking win authority.
+      const pend = source === "allbookings" ? null : snapData;
+      const ab = source === "allbookings" ? snapData : null;
+      const ride = buildActiveRideFromJobNodes(bid, paxStub, ab, pend ?? snapData);
+      if (!ride) {
+        patchDiag({
+          phase: `live:${source}`,
+          lastLiveRtdbStatus: `${source}=${String(statusRaw ?? "(empty)")}`,
+          decision: `live ${source} Status=${String(statusRaw ?? "")} — build null, Active Ride NOT set`,
+          activeRideJobId: "—",
+          activeRideStatus: "—",
+        });
+        return false;
+      }
+
+      pendingJobRef.current = { companyId: cid, jobId: bid };
+      listenersWiredForRef.current = `${cid}/${bid}`;
+      setActiveRide(ride);
+      void saveActiveRideSnapshot(ride);
+      patchDiag({
+        phase: `live:${source}`,
+        listenersKey: `${cid}/${bid}`,
+        lastLiveRtdbStatus: `${source}=${String(statusRaw ?? "(empty)")} drv=${driverOf(snapData)}`,
+        decision: `live ${source} Status=${String(statusRaw ?? "")} → CREATED Active Ride ${bid} (${ride.status})`,
+        activeRideJobId: bid,
+        activeRideStatus: ride.status,
+      });
+      return true;
+    },
+    [patchDiag],
+  );
+
   const simulationRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const mockDriverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const progressRef = useRef(0);
@@ -1278,12 +1370,32 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
 
       const rawStatus = String(d.Status ?? d.status ?? d.BookingStatus ?? d.bookingStatus ?? "").trim();
       const rawStatusLower = rawStatus.toLowerCase();
-      patchDiag({
-        phase: `live:${source}`,
-        listenersKey: listenersWiredForRef.current || `${pendingJobRef.current?.companyId}/${pendingJobRef.current?.jobId}`,
-        lastLiveRtdbStatus: `${source}=${rawStatus || "(empty)"} drv=${driverOf(d)}`,
-        decision: `live ${source} Status=${rawStatus || "(empty)"} → apply to Active Ride`,
-      });
+
+      // Precise gap fix: TRACE used to claim "apply" while every setActiveRide below
+      // no-ops when prev is null. Materialize first when memory is empty.
+      if (!activeRideRef.current) {
+        const created = materializeActiveRideFromLiveSnap(companyId, firestoreId, d, source);
+        if (!created) {
+          patchDiag({
+            phase: `live:${source}`,
+            listenersKey: listenersWiredForRef.current || `${companyId}/${firestoreId}`,
+            lastLiveRtdbStatus: `${source}=${rawStatus || "(empty)"} drv=${driverOf(d)}`,
+            decision: `live ${source} Status=${rawStatus || "(empty)"} — activeRide null and create skipped (see prior)`,
+            activeRideJobId: "—",
+            activeRideStatus: "—",
+          });
+        }
+        // If created, fall through so driver/status enrich still runs on the new ride.
+      } else {
+        patchDiag({
+          phase: `live:${source}`,
+          listenersKey: listenersWiredForRef.current || `${pendingJobRef.current?.companyId}/${pendingJobRef.current?.jobId}`,
+          lastLiveRtdbStatus: `${source}=${rawStatus || "(empty)"} drv=${driverOf(d)}`,
+          decision: `live ${source} Status=${rawStatus || "(empty)"} → patching Active Ride ${activeRideRef.current.firestoreId}`,
+          activeRideJobId: String(activeRideRef.current.firestoreId || "—"),
+          activeRideStatus: String(activeRideRef.current.status || "—"),
+        });
+      }
 
       // ── Update search phase so the passenger sees live queue status ──────
       setActiveRide((prev) => {
@@ -2151,12 +2263,28 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       const d = snap.val() as Record<string, unknown>;
       const rawStatus = String(d.Status ?? d.status ?? d.BookingStatus ?? d.bookingStatus ?? "").trim();
       const rawStatusLower = rawStatus.toLowerCase().replace(/\s+/g, "");
-      patchDiag({
-        phase: "live:reattach",
-        listenersKey: key,
-        lastLiveRtdbStatus: `reattach=${rawStatus || "(empty)"} drv=${driverOf(d)}`,
-        decision: `live reattach Status=${rawStatus || "(empty)"} → map to UI`,
-      });
+      if (!activeRideRef.current) {
+        const created = materializeActiveRideFromLiveSnap(companyId, firestoreId, d, "reattach");
+        if (!created) {
+          patchDiag({
+            phase: "live:reattach",
+            listenersKey: key,
+            lastLiveRtdbStatus: `reattach=${rawStatus || "(empty)"} drv=${driverOf(d)}`,
+            decision: `live reattach Status=${rawStatus || "(empty)"} — activeRide null and create skipped`,
+            activeRideJobId: "—",
+            activeRideStatus: "—",
+          });
+        }
+      } else {
+        patchDiag({
+          phase: "live:reattach",
+          listenersKey: key,
+          lastLiveRtdbStatus: `reattach=${rawStatus || "(empty)"} drv=${driverOf(d)}`,
+          decision: `live reattach Status=${rawStatus || "(empty)"} → patching Active Ride ${activeRideRef.current.firestoreId}`,
+          activeRideJobId: String(activeRideRef.current.firestoreId || "—"),
+          activeRideStatus: String(activeRideRef.current.status || "—"),
+        });
+      }
       const driverDisplayName = String(
         d.DriverName ?? d.driverName ?? d.AssignedDriverName ?? "",
       ).trim();
