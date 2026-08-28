@@ -1,16 +1,11 @@
 /**
  * bookingApi.ts — Thin client for all passenger booking actions.
  *
- * ALL booking writes go through these functions → local API server → Firebase.
- * The passenger app never writes to Firebase directly for booking state.
+ * Create/cancel historically targeted EXPO_PUBLIC_API_URL (bookawaka Railway),
+ * which 404s on /api/booking/* — those paths keep RTDB fallbacks in RideContext.
  *
- * Allowed actions: create, cancel, edit (before accept only).
- * Not allowed: touching driver state, queue, offers, or internal dispatch paths.
- *
- * URL resolution priority:
- *   1. EXPO_PUBLIC_BOOKING_API_URL  — dedicated booking API base (recommended)
- *   2. EXPO_PUBLIC_API_URL          — general API base (strips trailing /api if present)
- *   Both should point to the LOCAL Replit API server, not the external bookawaka server.
+ * Edit goes to INVT dispatch (`/api/job/passenger-edit`) so updateBooking appends
+ * editHistory, fans out DropAddress, and notifies the driver — no RTDB workaround.
  */
 
 import { auth } from "@/lib/firebase";
@@ -28,7 +23,15 @@ function resolveBookingBase(): string {
   return "";
 }
 
+function resolveDispatchBase(): string {
+  const dispatch = (process.env.EXPO_PUBLIC_DISPATCH_URL ?? "").replace(/\/+$/, "");
+  if (dispatch) return dispatch;
+  // Same default as signalImComing — live INVT production.
+  return "https://invt-production.up.railway.app";
+}
+
 const BOOKING_BASE = resolveBookingBase();
+const DISPATCH_BASE = resolveDispatchBase();
 
 async function getIdToken(): Promise<string> {
   const user = auth.currentUser;
@@ -99,14 +102,53 @@ export async function cancelBookingOnServer(params: {
   await apiPost("/cancel", params, idToken);
 }
 
-// ─── Edit Booking ─────────────────────────────────────────────────────────────
-// Only valid before a driver accepts. Send stop/fare updates to the dispatcher.
+// ─── Edit Booking (INVT updateBooking path) ───────────────────────────────────
+
+export type PassengerEditResult = {
+  ok: boolean;
+  idempotent?: boolean;
+  seq?: number;
+  eventTypes?: string[];
+  driverNotified?: boolean;
+  error?: string;
+  error_code?: string;
+};
 
 export async function editBookingOnServer(params: {
   companyId: string;
   jobId: string;
   editFields: Record<string, unknown>;
-}): Promise<void> {
-  const idToken = await getIdToken();
-  await apiPost("/edit", params, idToken);
+}): Promise<PassengerEditResult> {
+  const url = `${DISPATCH_BASE}/api/job/passenger-edit`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        bookingId: params.jobId,
+        companyId: params.companyId,
+        changes: params.editFields,
+        actorName: "passenger_app",
+      }),
+      signal: controller.signal,
+    });
+  } catch (networkErr) {
+    const msg = (networkErr as Error).message ?? "";
+    if (msg.toLowerCase().includes("aborted") || msg.toLowerCase().includes("abort")) {
+      throw new Error("Dispatch timed out — check your connection and try again");
+    }
+    throw new Error(`Network error reaching dispatch: ${msg}`);
+  } finally {
+    clearTimeout(timer);
+  }
+
+  const data = (await res.json().catch(() => ({}))) as PassengerEditResult;
+  if (!res.ok || !data?.ok) {
+    throw new Error(data?.error || `Edit failed (${res.status})`);
+  }
+  return data;
 }

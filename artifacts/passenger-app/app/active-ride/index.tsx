@@ -220,7 +220,7 @@ export default function ActiveRideScreen() {
 
   const handleAddStop = (place: PlaceDetail) => {
     const stop = { id: Date.now().toString(), place };
-    addStop(stop);
+    void addStop(stop);
   };
 
   const handleEditDestination = (place: PlaceDetail) => {
@@ -263,7 +263,7 @@ export default function ActiveRideScreen() {
           polyline={activeRide.route?.polylinePoints}
           distanceText={activeRide.route?.distanceText}
           durationText={activeRide.route?.durationText}
-          height={240}
+          height={180}
         />
 
         {/* Booking received banner — shown while dispatcher hasn't assigned a driver yet */}
@@ -750,38 +750,38 @@ const styles = StyleSheet.create({
   statusText: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
   sosBtn: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 20 },
   sosBtnText: { color: "#ef4444", fontSize: 13, fontFamily: "Inter_700Bold" },
-  content: { padding: 16, gap: 14 },
-  bookingReceivedBanner: { borderRadius: 14, borderWidth: 1, overflow: "hidden" },
-  bookingReceivedTop: { flexDirection: "row", gap: 10, padding: 14, alignItems: "flex-start" },
+  content: { padding: 12, gap: 10 },
+  bookingReceivedBanner: { borderRadius: 12, borderWidth: 1, overflow: "hidden" },
+  bookingReceivedTop: { flexDirection: "row", gap: 8, padding: 10, alignItems: "flex-start" },
   bookingReceivedIcon: { marginTop: 1 },
-  bookingReceivedTitle: { fontSize: 14, fontFamily: "Inter_600SemiBold", marginBottom: 4 },
-  bookingReceivedBody: { fontSize: 13, fontFamily: "Inter_400Regular", lineHeight: 19 },
-  bookingRefRow: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 14, paddingVertical: 8, borderTopWidth: 1 },
-  bookingRefText: { fontSize: 12, fontFamily: "Inter_400Regular", color: "#6b7280" },
-  routeCard: { borderRadius: 14, borderWidth: 1, padding: 14, gap: 10 },
-  routeRow: { flexDirection: "row", alignItems: "center", gap: 10 },
-  routeDot: { width: 10, height: 10, borderRadius: 5 },
-  routeText: { flex: 1, fontSize: 13, fontFamily: "Inter_400Regular" },
-  driverCard: { flexDirection: "row", alignItems: "center", gap: 12, borderRadius: 14, borderWidth: 1, padding: 14 },
-  driverAvatar: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center" },
-  driverInfo: { flex: 1, gap: 3 },
-  driverName: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  bookingReceivedTitle: { fontSize: 13, fontFamily: "Inter_600SemiBold", marginBottom: 2 },
+  bookingReceivedBody: { fontSize: 12, fontFamily: "Inter_400Regular", lineHeight: 17 },
+  bookingRefRow: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 10, paddingVertical: 6, borderTopWidth: 1 },
+  bookingRefText: { fontSize: 11, fontFamily: "Inter_400Regular", color: "#6b7280" },
+  routeCard: { borderRadius: 12, borderWidth: 1, padding: 10, gap: 6 },
+  routeRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  routeDot: { width: 8, height: 8, borderRadius: 4 },
+  routeText: { flex: 1, fontSize: 12, fontFamily: "Inter_400Regular" },
+  driverCard: { flexDirection: "row", alignItems: "center", gap: 10, borderRadius: 12, borderWidth: 1, padding: 10 },
+  driverAvatar: { width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center" },
+  driverInfo: { flex: 1, gap: 2 },
+  driverName: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
   driverMeta: { flexDirection: "row", alignItems: "center", gap: 4 },
-  driverMetaText: { fontSize: 12, fontFamily: "Inter_400Regular" },
-  plate: { fontSize: 13, fontFamily: "Inter_700Bold", letterSpacing: 1 },
-  chatBtn: { width: 38, height: 38, borderRadius: 10, borderWidth: 1, alignItems: "center", justifyContent: "center" },
-  headerActions: { flexDirection: "row", alignItems: "center", gap: 8 },
-  headerIconBtn: { width: 34, height: 34, borderRadius: 10, borderWidth: 1, alignItems: "center", justifyContent: "center" },
-  fareRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderRadius: 12, borderWidth: 1, padding: 14 },
-  fareLabel: { fontSize: 14, fontFamily: "Inter_400Regular" },
-  fareValue: { fontSize: 20, fontFamily: "Inter_700Bold" },
-  infoCard: { borderRadius: 14, borderWidth: 1, padding: 14, gap: 0 },
-  infoRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 8 },
+  driverMetaText: { fontSize: 11, fontFamily: "Inter_400Regular" },
+  plate: { fontSize: 12, fontFamily: "Inter_700Bold", letterSpacing: 1 },
+  chatBtn: { width: 34, height: 34, borderRadius: 8, borderWidth: 1, alignItems: "center", justifyContent: "center" },
+  headerActions: { flexDirection: "row", alignItems: "center", gap: 6 },
+  headerIconBtn: { width: 32, height: 32, borderRadius: 8, borderWidth: 1, alignItems: "center", justifyContent: "center" },
+  fareRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderRadius: 10, borderWidth: 1, paddingVertical: 10, paddingHorizontal: 12 },
+  fareLabel: { fontSize: 13, fontFamily: "Inter_400Regular" },
+  fareValue: { fontSize: 18, fontFamily: "Inter_700Bold" },
+  infoCard: { borderRadius: 12, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 6, gap: 0 },
+  infoRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 6 },
   infoDivider: { height: 1 },
   etaBadge: { flexDirection: "row", alignItems: "center", gap: 5 },
-  etaText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
-  payStatusBadge: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
-  payStatusText: { fontSize: 13, fontFamily: "Inter_500Medium" },
+  etaText: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
+  payStatusBadge: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 },
+  payStatusText: { fontSize: 12, fontFamily: "Inter_500Medium" },
   shareIconBox: { width: 56, height: 56, borderRadius: 28, alignItems: "center", justifyContent: "center" },
   trackingLinkBox: { borderRadius: 10, borderWidth: 1, padding: 12, width: "100%" },
   trackingLinkText: { fontSize: 12, fontFamily: "Inter_400Regular" },
@@ -790,12 +790,12 @@ const styles = StyleSheet.create({
   copyBtnText: { color: "#fff", fontSize: 15, fontFamily: "Inter_600SemiBold" },
   dismissBtn: { paddingVertical: 8 },
   dismissText: { fontSize: 14, fontFamily: "Inter_400Regular" },
-  addStopSection: { gap: 8 },
-  sectionLabel: { fontSize: 11, fontFamily: "Inter_600SemiBold", letterSpacing: 1 },
-  bottomBar: { padding: 16, borderTopWidth: 1 },
+  addStopSection: { gap: 6 },
+  sectionLabel: { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 1 },
+  bottomBar: { paddingHorizontal: 12, paddingTop: 10, borderTopWidth: 1 },
   arrivedActions: { flexDirection: "row", gap: 10 },
-  actionBtn: { borderRadius: 14, paddingVertical: 16, alignItems: "center", justifyContent: "center" },
-  actionBtnText: { color: "#fff", fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  actionBtn: { borderRadius: 12, paddingVertical: 14, alignItems: "center", justifyContent: "center" },
+  actionBtnText: { color: "#fff", fontSize: 14, fontFamily: "Inter_600SemiBold" },
   chatModal: { flex: 1 },
   chatHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 16, borderBottomWidth: 1 },
   chatTitle: { fontSize: 17, fontFamily: "Inter_600SemiBold" },
@@ -816,6 +816,6 @@ const styles = StyleSheet.create({
   confirmBtnText: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
   chargeBanner: { flexDirection: "row", alignItems: "center", gap: 8, borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8, width: "100%" },
   chargeBannerText: { fontSize: 13, fontFamily: "Inter_500Medium", flex: 1 },
-  cancelPolicyCard: { borderRadius: 12, borderWidth: 1, padding: 12, flexDirection: "row", alignItems: "center", gap: 10 },
-  cancelPolicyText: { fontSize: 13, fontFamily: "Inter_400Regular", flex: 1, lineHeight: 18 },
+  cancelPolicyCard: { borderRadius: 10, borderWidth: 1, paddingVertical: 8, paddingHorizontal: 10, flexDirection: "row", alignItems: "center", gap: 8 },
+  cancelPolicyText: { flex: 1, fontSize: 12, fontFamily: "Inter_500Medium", lineHeight: 16 },
 });

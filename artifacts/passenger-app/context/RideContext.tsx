@@ -17,7 +17,7 @@ import { auth, db, rtdb } from "@/lib/firebase";
 import { registerForPushNotificationsAsync } from "@/lib/pushNotifications";
 import { MOCK_DRIVERS, VehicleType } from "@/constants/companies";
 import { LatLng, PlaceDetail } from "@/lib/googlePlaces";
-import { RouteResult } from "@/lib/directions";
+import { getRoute, RouteResult } from "@/lib/directions";
 import { calculateFare, formatCurrency } from "@/lib/fareCalculator";
 import { useNotification } from "./NotificationContext";
 import { alertPassengerDriverArrived } from "@/lib/arrivalAlert";
@@ -236,7 +236,7 @@ interface RideContextType {
   ) => Promise<string>;
   cancelRide: (cancelOutcome?: "refund" | "free" | "charge", reason?: string) => Promise<void>;
   abortRide: () => void;
-  addStop: (stop: Stop) => void;
+  addStop: (stop: Stop) => Promise<boolean>;
   /** Change dropoff while ride is still editable (before arrived / onboard). */
   editDestination: (place: PlaceDetail) => Promise<boolean>;
   completeRide: (rating: number, tip: number) => Promise<void>;
@@ -1835,98 +1835,99 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
     dispatchOverrideRef.current = false;
   };
 
-  const addStop = (stop: Stop) => {
-    setActiveRide((prev) => {
-      if (!prev) return prev;
-      if (
-        prev.status === "arrived" ||
-        prev.status === "in_progress" ||
-        prev.status === "completed" ||
-        prev.status === "cancelled" ||
-        prev.status === "cancel_requested" ||
-        prev.status === "no_show"
-      ) {
-        setTimeout(
-          () => notify("Cannot edit", "Stops can only be added before the driver arrives.", "warning"),
-          0,
-        );
-        return prev;
-      }
-      const newStops = [...prev.stops, stop];
-      let newFare = prev.fare;
-      if (prev.route) {
-        const recalculated = calculateFare(
-          prev.route.distanceMeters,
-          prev.route.durationSeconds,
-          prev.vehicleType,
-          newStops.length
-        );
-        newFare = prev.discount
-          ? Math.round(recalculated.total * (1 - prev.discount) * 100) / 100
-          : recalculated.total;
-      }
-      const updated = { ...prev, stops: newStops, fare: newFare };
-      if (prev.firestoreId && prev.companyId) {
-        const editFields = {
-          stops: newStops.map((s) => ({
-            id: s.id,
-            address: s.place.address,
-            lat: s.place.location.latitude,
-            lng: s.place.location.longitude,
-          })),
-          estimatedFare: newFare,
-          Stops: newStops.map((s) => s.place.address),
-        };
-        void (async () => {
-          try {
-            await editBookingOnServer({
-              companyId: prev.companyId,
-              jobId: prev.firestoreId,
-              editFields,
-            });
-          } catch (apiErr) {
-            console.warn("[BookingAPI] Edit stop API failed — RTDB fallback:", (apiErr as Error).message);
-            try {
-              await Promise.all([
-                rtdbUpdate(rtdbRef(rtdb, `pendingjobs/${prev.companyId}/${prev.firestoreId}`), editFields),
-                rtdbUpdate(rtdbRef(rtdb, `allbookings/${prev.companyId}/${prev.firestoreId}`), editFields),
-              ]);
-            } catch (e) {
-              console.warn("[BookingAPI] Edit stop RTDB fallback failed:", e);
-              notify("Could not save stop", "Check your connection and try again.", "error");
-            }
+  const _rideEditableForTripChange = (status: RideStatus | undefined) =>
+    status !== "arrived" &&
+    status !== "in_progress" &&
+    status !== "completed" &&
+    status !== "cancelled" &&
+    status !== "cancel_requested" &&
+    status !== "no_show";
+
+  /** INVT-canonical dropoff / stop / fare fields for updateBooking (via passenger-edit). */
+  const buildCanonicalEditFields = (args: {
+    destination: PlaceDetail;
+    stops: Stop[];
+    fare: number;
+    route: RouteResult | null;
+  }): Record<string, unknown> => {
+    const { destination, stops, fare, route } = args;
+    const dropLatLng = `${destination.location.latitude},${destination.location.longitude}`;
+    const stopPayload = stops.map((s) => ({
+      id: s.id,
+      address: s.place.address,
+      lat: s.place.location.latitude,
+      lng: s.place.location.longitude,
+    }));
+    return {
+      DropAddress: destination.address,
+      dropoff: destination.address,
+      DropLatLng: dropLatLng,
+      dropLatLng,
+      EstimatedFare: fare,
+      CustomeRate: fare,
+      RideCost: fare,
+      ...(route
+        ? {
+            JobDistance: (route.distanceMeters / 1000).toFixed(2),
+            distance: (route.distanceMeters / 1000).toFixed(2),
           }
-        })();
-      }
-      return updated;
-    });
-    notify("Stop Added", `${stop.place.address.split(",")[0]} — fare updated`, "info");
+        : {}),
+      stops: stopPayload,
+      Stops: stops.map((s) => s.place.address),
+      Nextstop: String(stops.length),
+      nextstopdata: JSON.stringify(stopPayload),
+    };
   };
 
-  const editDestination = async (place: PlaceDetail): Promise<boolean> => {
+  const recalculateRouteAndFare = async (
+    pickup: PlaceDetail,
+    destination: PlaceDetail,
+    stops: Stop[],
+    vehicleType: VehicleType,
+    discount?: number | null,
+  ): Promise<{ route: RouteResult | null; fare: number }> => {
+    const waypoints = stops.map((s) => s.place.location);
+    const route = await getRoute(pickup.location, destination.location, waypoints);
+    if (!route) {
+      return { route: null, fare: 0 };
+    }
+    const calc = calculateFare(
+      route.distanceMeters,
+      route.durationSeconds,
+      vehicleType,
+      stops.length,
+    );
+    const fare = discount
+      ? Math.round(calc.total * (1 - discount) * 100) / 100
+      : calc.total;
+    return { route, fare };
+  };
+
+  const addStop = async (stop: Stop): Promise<boolean> => {
     const prev = activeRideRef.current;
     if (!prev?.firestoreId || !prev.companyId) return false;
-    if (
-      prev.status === "arrived" ||
-      prev.status === "in_progress" ||
-      prev.status === "completed" ||
-      prev.status === "cancelled" ||
-      prev.status === "cancel_requested" ||
-      prev.status === "no_show"
-    ) {
-      notify("Cannot edit", "Destination can only be changed before the driver arrives.", "warning");
+    if (!_rideEditableForTripChange(prev.status)) {
+      notify("Cannot edit", "Stops can only be added before the driver arrives.", "warning");
       return false;
     }
-    const editFields = {
-      DropoffAddress: place.address,
-      dropoffAddress: place.address,
-      DropoffLat: place.location.latitude,
-      DropoffLng: place.location.longitude,
-      dropoffLat: place.location.latitude,
-      dropoffLng: place.location.longitude,
-      destination: place.address,
-    };
-    setActiveRide((r) => (r ? { ...r, destination: place } : r));
+    const newStops = [...prev.stops, stop];
+    const { route, fare } = await recalculateRouteAndFare(
+      prev.pickup,
+      prev.destination,
+      newStops,
+      prev.vehicleType,
+      prev.discount,
+    );
+    if (!route || !(fare > 0)) {
+      notify("Could not update route", "Check the stop address and try again.", "error");
+      return false;
+    }
+    const editFields = buildCanonicalEditFields({
+      destination: prev.destination,
+      stops: newStops,
+      fare,
+      route,
+    });
     try {
       await editBookingOnServer({
         companyId: prev.companyId,
@@ -1934,22 +1935,75 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
         editFields,
       });
     } catch (apiErr) {
-      console.warn("[BookingAPI] Edit destination API failed — RTDB fallback:", (apiErr as Error).message);
-      try {
-        await Promise.all([
-          rtdbUpdate(rtdbRef(rtdb, `pendingjobs/${prev.companyId}/${prev.firestoreId}`), editFields),
-          rtdbUpdate(rtdbRef(rtdb, `allbookings/${prev.companyId}/${prev.firestoreId}`), editFields),
-        ]);
-      } catch (e) {
-        console.warn("[BookingAPI] Edit destination RTDB fallback failed:", e);
-        notify("Could not save destination", "Check your connection and try again.", "error");
-        return false;
-      }
+      console.warn("[BookingAPI] Edit stop failed:", (apiErr as Error).message);
+      notify("Could not save stop", (apiErr as Error).message || "Try again.", "error");
+      return false;
     }
-    notify("Destination updated", place.address.split(",")[0] || place.address, "success");
+    setActiveRide((r) =>
+      r && r.firestoreId === prev.firestoreId
+        ? { ...r, stops: newStops, fare, route }
+        : r,
+    );
+    notify(
+      "Stop Added",
+      `${stop.place.address.split(",")[0]} — fare ${formatCurrency(fare)}`,
+      "info",
+    );
     patchDiag({
       phase: "edit",
-      decision: `destination updated on ${prev.firestoreId}`,
+      decision: `stop added on ${prev.firestoreId} fare=${fare}`,
+    });
+    return true;
+  };
+
+  const editDestination = async (place: PlaceDetail): Promise<boolean> => {
+    const prev = activeRideRef.current;
+    if (!prev?.firestoreId || !prev.companyId) return false;
+    if (!_rideEditableForTripChange(prev.status)) {
+      notify("Cannot edit", "Destination can only be changed before the driver arrives.", "warning");
+      return false;
+    }
+    const { route, fare } = await recalculateRouteAndFare(
+      prev.pickup,
+      place,
+      prev.stops,
+      prev.vehicleType,
+      prev.discount,
+    );
+    if (!route || !(fare > 0)) {
+      notify("Could not update route", "Check the destination and try again.", "error");
+      return false;
+    }
+    const editFields = buildCanonicalEditFields({
+      destination: place,
+      stops: prev.stops,
+      fare,
+      route,
+    });
+    try {
+      await editBookingOnServer({
+        companyId: prev.companyId,
+        jobId: prev.firestoreId,
+        editFields,
+      });
+    } catch (apiErr) {
+      console.warn("[BookingAPI] Edit destination failed:", (apiErr as Error).message);
+      notify("Could not save destination", (apiErr as Error).message || "Try again.", "error");
+      return false;
+    }
+    setActiveRide((r) =>
+      r && r.firestoreId === prev.firestoreId
+        ? { ...r, destination: place, fare, route }
+        : r,
+    );
+    notify(
+      "Destination updated",
+      `${place.address.split(",")[0] || place.address} — ${formatCurrency(fare)}`,
+      "success",
+    );
+    patchDiag({
+      phase: "edit",
+      decision: `destination updated on ${prev.firestoreId} fare=${fare}`,
     });
     return true;
   };
