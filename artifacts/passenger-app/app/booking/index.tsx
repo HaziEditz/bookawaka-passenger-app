@@ -916,7 +916,7 @@ export default function BookingScreen() {
           markPaymentConfirmed();
         }
         if (!scheduledAt) {
-          notify("Searching for driver...", "Looking for the nearest driver for you.", "info");
+          notify("Booking created", "We'll find you a driver — watch Active Ride for updates.", "info");
         }
       } else if (payment === "wallet") {
         // Pure wallet payment — deduct the full fare immediately from the wallet

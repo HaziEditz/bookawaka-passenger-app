@@ -1,5 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-import { AppState, type AppStateStatus } from "react-native";
+import { Alert, AppState, type AppStateStatus } from "react-native";
 import {
   doc,
   updateDoc,
@@ -705,6 +705,7 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
   const rtdbRideStatusRef = useRef<ReturnType<typeof rtdbRef> | null>(null);
   const gpsListenerRef = useRef<ReturnType<typeof rtdbRef> | null>(null);
   const dispatchOverrideRef = useRef(false);
+  const driverFoundNotifiedRef = useRef<string>("");
   const activeRideRef = useRef<ActiveRide | null>(null);
   activeRideRef.current = activeRide;
   const listenersWiredForRef = useRef<string>("");
@@ -1014,7 +1015,11 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       await saveActiveRideSnapshot(ride);
       // Card holds: don't claim "searching" until Stripe confirms — payment can still fail.
       if (params.payment !== "card") {
-        notify("Searching for driver...", "Looking for the nearest driver for you.", "info");
+        notify(
+          "Booking created",
+          "We'll find you a driver — watch this screen for queue updates.",
+          "info",
+        );
       }
     } else {
       notify("Ride Scheduled!", "Your booking is saved — we'll dispatch before your pickup time.", "success");
@@ -1460,7 +1465,18 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
             : params.pickup.location;
           const startDist = haversineKm(loc, params.pickup.location);
           const niceName = driverDisplayName || `Driver ${driverIdOnly}`;
-          notify("Driver Found!", `${niceName} has been assigned to your ride.`, "success");
+          if (driverFoundNotifiedRef.current !== firestoreId) {
+            driverFoundNotifiedRef.current = firestoreId;
+            const etaMin = Number(d.ETA ?? d.eta ?? d.Eta);
+            const etaBit = Number.isFinite(etaMin) && etaMin > 0 ? ` · ~${Math.round(etaMin)} min` : "";
+            const distBit =
+              startDist > 0.05 ? ` · ${startDist < 1 ? `${Math.round(startDist * 1000)} m` : `${startDist.toFixed(1)} km`} away` : "";
+            notify(
+              "Driver found",
+              `${niceName} is assigned to your ride${distBit}${etaBit}.`,
+              "success",
+            );
+          }
           stopMockDriverTimer();
           stopSimulation();
           dispatchOverrideRef.current = true;
@@ -2133,6 +2149,23 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
     if (!activeRide?.firestoreId || !activeRide.companyId) return false;
     if (activeRide.imComingAt) return true;
     if (activeRide.status !== "arrived") return false;
+
+    // Spec: disclose fixed 5-min waiting cost (company waiting-rate) before agree.
+    // Server returns the authoritative estimate from the company's WaitingRate tariff.
+    const extensionMin = 5;
+    const provisionalCost = 0.6 * extensionMin;
+    const agreed = await new Promise<boolean>((resolve) => {
+      Alert.alert(
+        "Need more time?",
+        `This extends the driver's wait by ${extensionMin} minutes. A waiting charge (company waiting rate × ${extensionMin} min — typically about ${formatCurrency(provisionalCost)}) will be added to your trip if you continue.`,
+        [
+          { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+          { text: "I'm coming", onPress: () => resolve(true) },
+        ],
+      );
+    });
+    if (!agreed) return false;
+
     try {
       const dispatchBase =
         process.env.EXPO_PUBLIC_DISPATCH_URL ||
@@ -2159,7 +2192,15 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
             }
           : prev,
       );
-      notify("Driver notified", "You've got a bit more time — head to the pickup now.", "success");
+      const charged =
+        json.waitingCostEstimate != null
+          ? formatCurrency(Number(json.waitingCostEstimate))
+          : formatCurrency(provisionalCost);
+      notify(
+        "Driver notified",
+        `Extra ${extensionMin} min — about ${charged} waiting may be added. Head to the pickup now.`,
+        "success",
+      );
       return true;
     } catch {
       notify("Could not extend wait", "Check your connection and try again.", "error");
@@ -2566,7 +2607,18 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
           if (prev.driver?.name === niceName && prev.status !== "searching") return prev;
           dispatchOverrideRef.current = true;
           if (prev.status === "searching") {
-            setTimeout(() => notify("Driver Found!", `${niceName} has been assigned to your ride.`, "success"), 0);
+            if (driverFoundNotifiedRef.current !== firestoreId) {
+              driverFoundNotifiedRef.current = firestoreId;
+              setTimeout(
+                () =>
+                  notify(
+                    "Driver found",
+                    `${niceName} is assigned to your ride.`,
+                    "success",
+                  ),
+                0,
+              );
+            }
           }
           return {
             ...prev,

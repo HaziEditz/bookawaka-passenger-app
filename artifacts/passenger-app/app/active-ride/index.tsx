@@ -4,6 +4,7 @@ import * as Haptics from "expo-haptics";
 import { router, useLocalSearchParams } from "expo-router";
 import React, { useEffect, useMemo, useState } from "react";
 import {
+  ActivityIndicator,
   Modal,
   Platform,
   Pressable,
@@ -62,10 +63,14 @@ function useElapsedTime(running: boolean) {
 
 function searchLabel(phase: SearchPhase | undefined, elapsed: string): string {
   switch (phase) {
-    case "offered":  return `Booking received — allocating a driver for you (${elapsed})`;
-    case "queued":   return `In queue — a driver will be assigned shortly (${elapsed})`;
-    case "waiting":  return `Waiting for an available driver… (${elapsed})`;
-    default:         return `Sending booking to company… (${elapsed})`;
+    case "offered":
+      return `Finding you a driver — almost there (${elapsed})`;
+    case "queued":
+      return `You're in the queue — a driver will take your booking shortly (${elapsed})`;
+    case "waiting":
+      return `Booking created — we'll find you a driver (${elapsed})`;
+    default:
+      return `Booking created — we'll find you a driver (${elapsed})`;
   }
 }
 
@@ -162,6 +167,19 @@ export default function ActiveRideScreen() {
   }, [activeRide?.status, activeRide?.payment, activeRide?.fare, activeRide?.acceptedAt, activeRide?.isTM, activeRide?.tmPassengerAmount, driverDistancePct, now]);
 
   if (!activeRide) {
+    const booking = String(params.booking || "").trim();
+    const cid = String(params.cid || params.companyId || "").trim();
+    // Avoid post-pay flash: keep a stable restoring frame while params resume in flight.
+    if (booking && cid) {
+      return (
+        <View style={[styles.container, { backgroundColor: colors.background, padding: 16, paddingTop: insets.top + 24, alignItems: "center", justifyContent: "center" }]}>
+          <ActivityIndicator />
+          <Text style={{ color: colors.mutedForeground, fontFamily: "Inter_500Medium", marginTop: 12, textAlign: "center" }}>
+            Restoring your ride…
+          </Text>
+        </View>
+      );
+    }
     return (
       <View style={[styles.container, { backgroundColor: colors.background, padding: 16, paddingTop: insets.top + 24 }]}>
         <Text style={{ color: colors.mutedForeground, fontFamily: "Inter_500Medium", marginBottom: 12, textAlign: "center" }}>
