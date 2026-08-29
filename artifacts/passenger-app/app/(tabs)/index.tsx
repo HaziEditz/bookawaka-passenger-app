@@ -37,7 +37,7 @@ export default function HomeScreen() {
   const broadcasts = useSuperBroadcast();
   const { companies, loading: companiesLoading } = useCompanies();
   const liveCompanies = companies.filter(
-    (c) => c.id !== "any" && !isLoadTestCompanyId(c.id) && c.driversAvailable !== false,
+    (c) => c.id !== "any" && !isLoadTestCompanyId(c.id) && c.asapBookable !== false,
   );
   const recent = history.slice(0, 3);
   const topPadding = Platform.OS === "web" ? insets.top + 67 : insets.top;

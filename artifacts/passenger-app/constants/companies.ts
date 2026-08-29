@@ -24,7 +24,15 @@ export interface Company {
   tmApproved?: boolean;
   tmCarTariff?: TariffRates;
   tmWheelchairTariff?: TariffRates;
+  /** Informational only — never gates ASAP booking (Option 1 pool). */
   driversAvailable?: boolean;
+  /**
+   * ASAP allowed when company dispatch console is online (activeDispatchers)
+   * AND within configured operating hours. Ignores individual driver status.
+   */
+  asapBookable?: boolean;
+  dispatchOnline?: boolean;
+  operatingHours?: string;
   ownerEmail?: string;
   /** IANA timezone string, e.g. "Pacific/Auckland", "Australia/Sydney".
    *  Stored in companySettings/{cid}/timezone in Firebase.

@@ -8,6 +8,10 @@ import {
   VehicleType,
 } from "@/constants/companies";
 import { auth, rtdb } from "@/lib/firebase";
+import {
+  asapBookingAllowed,
+  isCompanyDispatchOnline,
+} from "@/lib/companyBookingAvailability";
 
 const BRAND_COLORS = [
   "#1e40af", "#0891b2", "#7c3aed", "#16a34a", "#dc2626",
@@ -145,9 +149,18 @@ export function CompaniesProvider({ children }: { children: React.ReactNode }) {
     let onlineData: Record<string, RtdbDriver> = {};
     let vehicleData: Record<string, RtdbVehicle> = {};
     let tariffData: Record<string, unknown> = {};
+    let activeDispatchersData: Record<string, Record<string, unknown>> = {};
+    let companySettingsData: Record<string, Record<string, unknown>> = {};
     /** Names from GET /api/companies (Admin SDK) — used when RTDB companyProfiles is unreadable. */
     let apiNameById: Record<string, string> = {};
-    let loaded = { companies: false, online: false, vehicles: false, tariffs: false };
+    let loaded = {
+      companies: false,
+      online: false,
+      vehicles: false,
+      tariffs: false,
+      dispatchers: false,
+      settings: false,
+    };
     let rtdbUnsubs: Array<() => void> = [];
 
     function rebuild() {
@@ -486,6 +499,37 @@ export function CompaniesProvider({ children }: { children: React.ReactNode }) {
         const ownerEmail = ownerEmailRaw.includes("@") ? ownerEmailRaw : undefined;
 
 
+        const settings = (companySettingsData[id] || {}) as Record<string, unknown>;
+        const hoursRaw = String(
+          settings.operatingHours ??
+            settings.operating_hours ??
+            data.operatingHours ??
+            data.operating_hours ??
+            "",
+        ).trim();
+        const tzRaw = String(
+          settings.timezone ??
+            settings.timeZone ??
+            data.timezone ??
+            data.timeZone ??
+            data.time_zone ??
+            data.tz ??
+            "",
+        ).trim();
+        const timezone = tzRaw.includes("/") ? tzRaw : undefined;
+        // Until activeDispatchers has loaded, do not hard-block (avoid flash of offline).
+        const dispatchOnline = loaded.dispatchers
+          ? isCompanyDispatchOnline(
+              (activeDispatchersData[id] || null) as Record<string, Record<string, unknown>> | null,
+            )
+          : true;
+        const asap = asapBookingAllowed({
+          dispatchOnline,
+          operatingHours: hoursRaw,
+          timezone,
+          isScheduled: false,
+        });
+
         live.push({
           id,
           name,
@@ -503,13 +547,16 @@ export function CompaniesProvider({ children }: { children: React.ReactNode }) {
             ? (toTariff(tmWheelRaw as Record<string, unknown>) ?? undefined)
             : undefined,
           driversAvailable: hasAvailableDrivers,
+          dispatchOnline,
+          operatingHours: hoursRaw || undefined,
+          asapBookable: asap.allowed,
           ownerEmail,
           timezone: (() => {
             const raw = String(
-              data.timezone ?? data.timeZone ?? data.time_zone ?? data.tz ?? ""
+              data.timezone ?? data.timeZone ?? data.time_zone ?? data.tz ?? timezone ?? ""
             ).trim();
             // Accept only plausible IANA strings (must contain a slash, e.g. "Pacific/Auckland")
-            return raw.includes("/") ? raw : undefined;
+            return raw.includes("/") ? raw : timezone;
           })(),
         });
         colorIdx++;
@@ -518,9 +565,12 @@ export function CompaniesProvider({ children }: { children: React.ReactNode }) {
       // Build "Any Available" from the union of all real company vehicles — not hardcoded
       const allRealVehicles = new Set<VehicleType>();
       for (const c of live) c.vehicles.forEach((v) => allRealVehicles.add(v));
+      const anyAsap = live.some((c) => c.asapBookable !== false);
       const dynamicAny: Company = {
         ...ANY_COMPANY,
         vehicles: allRealVehicles.size > 0 ? Array.from(allRealVehicles) : ["Sedan"],
+        asapBookable: anyAsap,
+        dispatchOnline: live.some((c) => c.dispatchOnline),
       };
 
       setCompanies([dynamicAny, ...live]);
@@ -532,8 +582,15 @@ export function CompaniesProvider({ children }: { children: React.ReactNode }) {
       rtdbUnsubs.forEach((u) => u());
       rtdbUnsubs = [];
 
-      // Reset loaded flags so rebuild waits for all four nodes again
-      loaded = { companies: false, online: false, vehicles: false, tariffs: false };
+      // Reset loaded flags so rebuild waits for core four nodes again
+      loaded = {
+        companies: false,
+        online: false,
+        vehicles: false,
+        tariffs: false,
+        dispatchers: loaded.dispatchers,
+        settings: loaded.settings,
+      };
 
       const u1 = onValue(
         ref(rtdb, "companyProfiles"),
@@ -555,8 +612,34 @@ export function CompaniesProvider({ children }: { children: React.ReactNode }) {
         (snap) => { tariffData = (snap.val() as Record<string, unknown>) ?? {}; loaded.tariffs = true; rebuild(); },
         (err) => { console.warn("[Tariffs] RTDB error:", err.message); loaded.tariffs = true; rebuild(); }
       );
-
-      rtdbUnsubs = [u1, u2, u3, u4];
+      // ASAP gate: company dispatch console presence (not individual drivers).
+      const u5 = onValue(
+        ref(rtdb, "activeDispatchers"),
+        (snap) => {
+          activeDispatchersData = (snap.val() as Record<string, Record<string, unknown>>) ?? {};
+          loaded.dispatchers = true;
+          rebuild();
+        },
+        (err) => {
+          console.warn("[Dispatchers] RTDB error:", err.message);
+          loaded.dispatchers = true;
+          rebuild();
+        },
+      );
+      const u6 = onValue(
+        ref(rtdb, "companySettings"),
+        (snap) => {
+          companySettingsData = (snap.val() as Record<string, Record<string, unknown>>) ?? {};
+          loaded.settings = true;
+          rebuild();
+        },
+        (err) => {
+          console.warn("[CompanySettings] RTDB error:", err.message);
+          loaded.settings = true;
+          rebuild();
+        },
+      );
+      rtdbUnsubs = [u1, u2, u3, u4, u5, u6];
     }
 
     // Public company directory (Admin SDK) — reliable names when RTDB profiles are denied.

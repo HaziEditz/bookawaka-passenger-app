@@ -208,30 +208,37 @@ export default function BookingScreen() {
 
   const scheduledAtValid = !scheduledAt || scheduledAt.getTime() - Date.now() >= 30 * 60 * 1000;
 
-  // ASAP rides are blocked when no drivers are online.
-  // Scheduled (future) rides are always allowed — drivers may be available then.
-  const anyRealDriverAvailable = companies.some((c) => c.id !== "any" && c.driversAvailable !== false);
-  const effectiveDriversAvailable = company.id === "any" ? anyRealDriverAvailable : company.driversAvailable !== false;
-  const noDriversBlocked = !scheduledAt && !effectiveDriversAvailable;
+  // ASAP rides require company dispatch online + within operating hours.
+  // Individual driver online/busy is ignored — job sits in Pending until a driver takes it.
+  // Scheduled (future) rides are always allowed.
+  const anyRealAsapBookable = companies.some((c) => c.id !== "any" && c.asapBookable !== false);
+  const effectiveAsapBookable = company.id === "any" ? anyRealAsapBookable : company.asapBookable !== false;
+  const asapBlocked = !scheduledAt && !effectiveAsapBookable;
+  const asapBlockReason =
+    asapBlocked && company.dispatchOnline === false
+      ? "dispatch_offline"
+      : asapBlocked
+        ? "outside_hours"
+        : "ok";
 
   const scheduledAtLabel = scheduledAt ? formatTZScheduledLabel(bookingTZ, scheduledAt) : "";
 
-  // Auto-select first online company when Firebase data loads; preserve explicit user choice after that.
+  // Auto-select first ASAP-bookable company when Firebase data loads; preserve explicit user choice after that.
   // Also reset vehicleType to the company's first vehicle when company changes.
   useEffect(() => {
     if (!companiesLoading && companies.length > 0) {
       setCompany((prev) => {
-        // Prefer keeping the current selection only if it is still online and not load-test
+        // Prefer keeping the current selection only if it is still bookable and not load-test
         const found = companies.find(
           (c) =>
             c.id === prev.id &&
             !isLoadTestCompanyId(c.id) &&
-            c.driversAvailable !== false,
+            c.asapBookable !== false,
         );
         const next =
           found ??
           companies.find(
-            (c) => c.id !== "any" && !isLoadTestCompanyId(c.id) && c.driversAvailable !== false,
+            (c) => c.id !== "any" && !isLoadTestCompanyId(c.id) && c.asapBookable !== false,
           ) ??
           companies.find((c) => c.id !== "any" && !isLoadTestCompanyId(c.id)) ??
           companies[0];
@@ -257,11 +264,11 @@ export default function BookingScreen() {
   const [scannerOpen, setScannerOpen] = useState(false);
   const [editingPassengerId, setEditingPassengerId] = useState<string | null>(null);
 
-  const onlineCompanies = companies.filter(
-    (c) => !isLoadTestCompanyId(c.id) && c.driversAvailable !== false,
+  const bookableCompanies = companies.filter(
+    (c) => !isLoadTestCompanyId(c.id) && (isScheduled || c.asapBookable !== false),
   );
-  const tmApprovedCompanies = onlineCompanies.filter((c) => c.tmApproved);
-  const visibleCompanies = isTM ? tmApprovedCompanies : onlineCompanies;
+  const tmApprovedCompanies = bookableCompanies.filter((c) => c.tmApproved);
+  const visibleCompanies = isTM ? tmApprovedCompanies : bookableCompanies;
 
   const hoistCount = tmPassengers.filter((p) => p.needsHoist).length;
   const totalHoistFee = hoistCount * tmSettings.hoistFeePerLift;
@@ -507,7 +514,7 @@ export default function BookingScreen() {
     if (company.id !== "any") return company.id;
     if (scheduledAt) return companies.find((c) => c.id !== "any")?.id ?? company.id;
     return (
-      companies.find((c) => c.id !== "any" && c.driversAvailable !== false)?.id ??
+      companies.find((c) => c.id !== "any" && c.asapBookable !== false)?.id ??
       companies.find((c) => c.id !== "any")?.id ??
       company.id
     );
@@ -674,11 +681,13 @@ export default function BookingScreen() {
       Alert.alert("Missing Info", "Please enter both pickup and destination.");
       return;
     }
-    // No drivers for ASAP — offer to switch to scheduled instead of just blocking
-    if (noDriversBlocked && !isScheduled) {
+    // ASAP blocked when company dispatch is offline or outside operating hours
+    if (asapBlocked && !isScheduled) {
       Alert.alert(
-        "No Drivers Available",
-        "There are no drivers online right now. Would you like to schedule a ride for a later time instead?",
+        asapBlockReason === "outside_hours" ? "Outside operating hours" : "Dispatch offline",
+        asapBlockReason === "outside_hours"
+          ? "This company is outside its configured operating hours. You can schedule a ride for a later time instead."
+          : "This company's dispatch is not online right now. You can schedule a ride for a later time instead.",
         [
           { text: "Go Back", style: "cancel" },
           {
@@ -749,12 +758,11 @@ export default function BookingScreen() {
     }
 
     // Safety guard — UI should have blocked this, but double-check here
-    if (noDriversBlocked) return;
+    if (asapBlocked) return;
 
     // If "Any Available" was selected, resolve to the first real registered company.
-    // For ASAP rides, prefer companies with drivers online. For scheduled rides,
-    // any real company will do — drivers may be available at the scheduled time.
-    // Never resolve to load-test harness tenants (bwtest*).
+    // For ASAP rides, prefer companies with dispatch online + in hours. For scheduled,
+    // any real company will do. Never resolve to load-test harness tenants (bwtest*).
     const realCompanies = companies.filter(
       (c) => c.id !== "any" && !isLoadTestCompanyId(c.id),
     );
@@ -762,7 +770,7 @@ export default function BookingScreen() {
       company.id === "any"
         ? scheduledAt
           ? (realCompanies[0] ?? company)
-          : (realCompanies.find((c) => c.driversAvailable !== false) ??
+          : (realCompanies.find((c) => c.asapBookable !== false) ??
              realCompanies[0] ??
              company)
         : company;
@@ -1319,14 +1327,14 @@ export default function BookingScreen() {
                 <Feather name="wifi-off" size={15} color="#d97706" />
                 <Text style={[styles.noDriverText, { color: "#92400e" }]}>
                   {isTM
-                    ? "No TM-approved companies are online right now."
-                    : "No companies are online right now. Please try again later."}
+                    ? "No TM-approved companies are accepting bookings right now."
+                    : "No companies are accepting ASAP bookings right now (dispatch offline or outside hours). You can schedule for later."}
                 </Text>
               </View>
             )}
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.companyScroll}>
               {visibleCompanies.map((c) => {
-                const noDrivers = c.driversAvailable === false;
+                const offline = c.asapBookable === false;
                 const isSelected = company.id === c.id;
                 return (
                   <Pressable
@@ -1335,19 +1343,21 @@ export default function BookingScreen() {
                     style={({ pressed }) => [
                       styles.companyChip,
                       {
-                        backgroundColor: isSelected ? (noDrivers ? colors.muted : c.color) : colors.card,
-                        borderColor: isSelected ? (noDrivers ? colors.border : c.color) : colors.border,
-                        opacity: pressed ? 0.8 : noDrivers ? 0.6 : 1,
+                        backgroundColor: isSelected ? (offline ? colors.muted : c.color) : colors.card,
+                        borderColor: isSelected ? (offline ? colors.border : c.color) : colors.border,
+                        opacity: pressed ? 0.8 : offline ? 0.6 : 1,
                       },
                     ]}
                   >
-                    <Text style={[styles.companyChipText, { color: isSelected && !noDrivers ? "#fff" : colors.foreground }]}>
+                    <Text style={[styles.companyChipText, { color: isSelected && !offline ? "#fff" : colors.foreground }]}>
                       {c.name}
                     </Text>
-                    {noDrivers ? (
+                    {offline ? (
                       <View style={styles.companyRating}>
                         <Feather name="wifi-off" size={10} color={colors.mutedForeground} />
-                        <Text style={[styles.companyRatingText, { color: colors.mutedForeground }]}>Offline</Text>
+                        <Text style={[styles.companyRatingText, { color: colors.mutedForeground }]}>
+                          {c.dispatchOnline === false ? "Dispatch off" : "Closed"}
+                        </Text>
                       </View>
                     ) : (
                       <View style={styles.companyRating}>
@@ -1362,17 +1372,21 @@ export default function BookingScreen() {
               })}
             </ScrollView>
 
-            {/* No drivers online for ASAP — hide vehicle picker, show schedule prompt */}
-            {noDriversBlocked && (
+            {/* ASAP blocked: dispatch offline or outside hours — offer schedule */}
+            {asapBlocked && (
               <View style={{ alignItems: "center", paddingVertical: 40, gap: 16 }}>
                 <View style={{ width: 64, height: 64, borderRadius: 32, backgroundColor: colors.muted, alignItems: "center", justifyContent: "center" }}>
                   <Feather name="wifi-off" size={28} color={colors.mutedForeground} />
                 </View>
                 <Text style={{ fontSize: 17, fontFamily: "Inter_600SemiBold", color: colors.foreground, textAlign: "center" }}>
-                  No drivers online right now
+                  {asapBlockReason === "outside_hours"
+                    ? "Outside operating hours"
+                    : "Dispatch is offline"}
                 </Text>
                 <Text style={{ fontSize: 14, color: colors.mutedForeground, textAlign: "center", lineHeight: 20, paddingHorizontal: 24 }}>
-                  All drivers are currently off duty. You can schedule a ride for a future time and a driver will be ready for you.
+                  {asapBlockReason === "outside_hours"
+                    ? "This company is outside its configured hours. Schedule a ride for a time when they are open."
+                    : "This company's dispatch console is not online. You can still schedule a ride for later."}
                 </Text>
                 <Pressable
                   onPress={() => setIsScheduled(true)}
@@ -1383,7 +1397,7 @@ export default function BookingScreen() {
                 </Pressable>
               </View>
             )}
-            {!noDriversBlocked && (
+            {!asapBlocked && (
               <View>
                 <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>VEHICLE TYPE</Text>
                 <View style={styles.vehicleGrid}>
@@ -1998,13 +2012,15 @@ export default function BookingScreen() {
         )}
         {step === "confirm" && (
           <>
-            {/* No drivers online for ASAP ride — offer to schedule instead */}
-            {noDriversBlocked && (
+            {/* ASAP blocked: dispatch offline / outside hours — offer schedule */}
+            {asapBlocked && (
               <View style={[styles.noDriverBanner, { backgroundColor: "#fef3c7", borderColor: "#fbbf24" }]}>
                 <Feather name="alert-triangle" size={15} color="#d97706" />
                 <View style={{ flex: 1 }}>
                   <Text style={[styles.noDriverText, { color: "#92400e" }]}>
-                    No drivers online right now.
+                    {asapBlockReason === "outside_hours"
+                      ? "Outside operating hours."
+                      : "Dispatch is offline right now."}
                   </Text>
                   <Pressable onPress={() => setIsScheduled(true)}>
                     <Text style={{ color: "#d97706", fontSize: 12, fontFamily: "Inter_600SemiBold", marginTop: 3 }}>
@@ -2022,8 +2038,8 @@ export default function BookingScreen() {
             )}
             <Pressable
               onPress={handleBook}
-              disabled={booking || noDriversBlocked || (isScheduled && !scheduledAtValid)}
-              style={({ pressed }) => [styles.cta, { backgroundColor: noDriversBlocked || (isScheduled && !scheduledAtValid) ? colors.muted : colors.primary, opacity: pressed || booking ? 0.7 : 1 }]}
+              disabled={booking || asapBlocked || (isScheduled && !scheduledAtValid)}
+              style={({ pressed }) => [styles.cta, { backgroundColor: asapBlocked || (isScheduled && !scheduledAtValid) ? colors.muted : colors.primary, opacity: pressed || booking ? 0.7 : 1 }]}
             >
               {booking
                 ? <>
