@@ -2413,7 +2413,8 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
     };
   }, [authUser?.uid, ensureTripInHistory, patchDiag]);
 
-  // After Stripe "Go back to app" / AuthSession hang: verify pending session and restore ride.
+  // After Stripe "Go back to app" / AuthSession hang: restore ride, then verify (with timeout).
+  // Resume first — a hung verify must not block Active Ride when cold hydrate already has data.
   useEffect(() => {
     if (!hydrateReady) return;
     let busy = false;
@@ -2427,19 +2428,26 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
         const { verifyAndDispatchBooking } = await import("@/lib/stripePayment");
         const pending = await loadPendingStripeRestore();
         if (!pending) return;
+        await resumeActiveRide(pending.companyId, pending.bookingId);
         try {
-          await verifyAndDispatchBooking({
-            companyId: pending.companyId,
-            bookingId: pending.bookingId,
-            sessionId: pending.sessionId,
-          });
+          await Promise.race([
+            verifyAndDispatchBooking({
+              companyId: pending.companyId,
+              bookingId: pending.bookingId,
+              sessionId: pending.sessionId,
+            }),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error("verify-timeout")), 12_000),
+            ),
+          ]);
           await clearPendingStripeRestore();
           markPaymentConfirmed();
+          await resumeActiveRide(pending.companyId, pending.bookingId);
         } catch (e) {
           console.warn("[Ride] pending Stripe verify:", e);
-          // Still attempt resume — payment may already be confirmed server-side.
+          // Keep pending for a later AppState retry; ride may already be visible.
+          await resumeActiveRide(pending.companyId, pending.bookingId);
         }
-        await resumeActiveRide(pending.companyId, pending.bookingId);
       } finally {
         busy = false;
       }
