@@ -42,7 +42,6 @@ import {
   pickAuthoritativeStatus,
 } from "@/lib/passengerJobRecover";
 import {
-  emptyActiveRideDiag,
   driverOf,
   payOf,
   statusOf,
@@ -253,8 +252,6 @@ interface RideContextType {
   hydrateReady: boolean;
   /** Reattach a live booking by id (Stripe return / push / deep link). */
   resumeActiveRide: (companyId: string, bookingId: string) => Promise<boolean>;
-  /** Inline Active Ride trace for Ad (records checked + decision). */
-  activeRideDiag: ActiveRideDiag;
 }
 
 const RideContext = createContext<RideContextType | null>(null);
@@ -603,14 +600,8 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
   const [activeRide, setActiveRide] = useState<ActiveRide | null>(null);
   const [driverLocation, setDriverLocation] = useState<LatLng | null>(null);
   const [hydrateReady, setHydrateReady] = useState(false);
-  const [activeRideDiag, setActiveRideDiag] = useState<ActiveRideDiag>(() => emptyActiveRideDiag());
-  const patchDiag = useCallback((partial: Partial<ActiveRideDiag>) => {
-    setActiveRideDiag((prev) => ({
-      ...prev,
-      ...partial,
-      at: new Date().toISOString(),
-    }));
-  }, []);
+  // TRACE panel removed — keep no-op so hydrate/resume probe call sites stay intact.
+  const patchDiag = useCallback((_partial: Partial<ActiveRideDiag>) => {}, []);
 
   /**
    * Live RTDB handlers historically only PATCHed an existing activeRide
@@ -2627,7 +2618,6 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
         signalImComing,
         hydrateReady,
         resumeActiveRide,
-        activeRideDiag,
       }}
     >
       {children}

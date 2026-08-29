@@ -16,7 +16,6 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { PlacesAutocomplete } from "@/components/PlacesAutocomplete";
 import { RouteMap } from "@/components/RouteMap";
-import { ActiveRideTracePanel } from "@/components/ActiveRideTracePanel";
 import { useRide, SearchPhase, computeCancelPolicy, haversineKm } from "@/context/RideContext";
 import { useNotification } from "@/context/NotificationContext";
 import { formatCurrency } from "@/lib/fareCalculator";
@@ -71,7 +70,7 @@ function searchLabel(phase: SearchPhase | undefined, elapsed: string): string {
 export default function ActiveRideScreen() {
   const colors = useColors();
   const { notify } = useNotification();
-  const { activeRide, driverLocation, cancelRide, addStop, editDestination, clearRide, signalImComing, recordCompletedTripHistory, hydrateReady, resumeActiveRide, activeRideDiag } = useRide();
+  const { activeRide, driverLocation, cancelRide, addStop, editDestination, clearRide, signalImComing, recordCompletedTripHistory, hydrateReady, resumeActiveRide } = useRide();
   const params = useLocalSearchParams<{ booking?: string; cid?: string; companyId?: string }>();
   const insets = useSafeAreaInsets();
   const elapsed = useElapsedTime(activeRide?.status === "searching");
@@ -152,7 +151,6 @@ export default function ActiveRideScreen() {
         <Text style={{ color: colors.mutedForeground, fontFamily: "Inter_500Medium", marginBottom: 12, textAlign: "center" }}>
           {hydrateReady ? "No Active Ride in memory — returning home…" : "Restoring your trip…"}
         </Text>
-        <ActiveRideTracePanel diag={activeRideDiag} />
       </View>
     );
   }
@@ -253,7 +251,6 @@ export default function ActiveRideScreen() {
       </View>
 
       <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 120 }]}>
-        <ActiveRideTracePanel diag={activeRideDiag} />
 
         {/* Map */}
         <RouteMap
