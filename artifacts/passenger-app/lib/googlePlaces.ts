@@ -66,6 +66,8 @@ export async function searchPlaces(
     if (bias && Number.isFinite(bias.lat) && Number.isFinite(bias.lng)) {
       params.set("location", `${bias.lat},${bias.lng}`);
       params.set("radius", String(bias.radius && bias.radius > 0 ? bias.radius : 50000));
+      // Hard fence: only suggestions strictly inside location+radius (not soft rank bias).
+      params.set("strictbounds", "true");
     }
     const data = await fetchGoogle("places/autocomplete", params);
     if (data.status !== "OK" && data.status !== "ZERO_RESULTS") return [];

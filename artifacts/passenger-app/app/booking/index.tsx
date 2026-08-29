@@ -32,6 +32,7 @@ import { getRoute, RouteResult } from "@/lib/directions";
 import { calculateFare, formatCurrency } from "@/lib/fareCalculator";
 import { PlaceDetail, reverseGeocode } from "@/lib/googlePlaces";
 import { resolvePlacesBias, PlacesBias } from "@/lib/placesBias";
+import { checkTripSanity } from "@/lib/tripGeoGuard";
 import { useTMSettings, calcTMSubsidy } from "@/lib/tmSettings";
 import { useColors } from "@/hooks/useColors";
 import { openStripeCheckout, verifyAndDispatchBooking, StripeCheckoutCancelledError } from "@/lib/stripePayment";
@@ -373,8 +374,40 @@ export default function BookingScreen() {
     setLoadingRoute(true);
     const waypoints = stops.map((s) => s.place.location);
     const result = await getRoute(pickup.location, destination.location, waypoints);
-    setRoute(result);
     setLoadingRoute(false);
+    if (!result) {
+      setRoute(null);
+      return null;
+    }
+    const previewFare = calculateFare(
+      result.distanceMeters,
+      result.durationSeconds,
+      vehicleType,
+      stops.length,
+      getVehicleTariff(company, vehicleType),
+    );
+    const sanity = checkTripSanity({
+      distanceMeters: result.distanceMeters,
+      fareTotal: previewFare.total,
+    });
+    if (!sanity.ok) {
+      setRoute(null);
+      Alert.alert("Implausible trip", sanity.reason);
+      return null;
+    }
+    if (sanity.warn) {
+      const proceed = await new Promise<boolean>((resolve) => {
+        Alert.alert("Long trip — confirm address", sanity.warn, [
+          { text: "Go Back", style: "cancel", onPress: () => resolve(false) },
+          { text: "Looks Correct", onPress: () => resolve(true) },
+        ]);
+      });
+      if (!proceed) {
+        setRoute(null);
+        return null;
+      }
+    }
+    setRoute(result);
     return result;
   };
 
@@ -974,14 +1007,15 @@ export default function BookingScreen() {
 
       <KeyboardAvoidingView
         style={{ flex: 1 }}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
         keyboardVerticalOffset={Platform.OS === "ios" ? 8 : 0}
       >
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 120 }]}
+        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 220 }]}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
+        automaticallyAdjustKeyboardInsets
       >
         {/* STEP 1: Location */}
         {step === "location" && (
@@ -1206,13 +1240,14 @@ export default function BookingScreen() {
                 icon="circle"
                 iconColor={colors.success}
                 locationBias={placesBias}
+                role="pickup"
               />
               {stops.map((stop) => (
                 <View key={stop.id} style={styles.stopRow}>
                   <View style={[styles.stopLine, { backgroundColor: colors.border }]} />
                   <View style={[styles.stopInputRow, { borderColor: colors.border, backgroundColor: colors.card }]}>
                     <Feather name="map-pin" size={14} color={colors.warning} />
-                    <Text style={[styles.stopText, { color: colors.foreground }]} numberOfLines={1}>
+                    <Text style={[styles.stopText, { color: colors.foreground }]} numberOfLines={1} ellipsizeMode="tail">
                       {stop.place.address}
                     </Text>
                     <Pressable onPress={() => removeStop(stop.id)}>
@@ -1230,6 +1265,8 @@ export default function BookingScreen() {
                   iconColor={colors.warning}
                   autoFocus
                   locationBias={placesBias}
+                  nearPickup={pickup?.location ?? null}
+                  role="stop"
                 />
               )}
               <PlacesAutocomplete
@@ -1239,6 +1276,8 @@ export default function BookingScreen() {
                 icon="navigation"
                 iconColor={colors.destructive}
                 locationBias={placesBias}
+                nearPickup={pickup?.location ?? null}
+                role="destination"
               />
             </View>
             <Pressable

@@ -1,4 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { AppState, type AppStateStatus } from "react-native";
 import {
   doc,
   updateDoc,
@@ -19,6 +20,7 @@ import { MOCK_DRIVERS, VehicleType } from "@/constants/companies";
 import { LatLng, PlaceDetail } from "@/lib/googlePlaces";
 import { getRoute, RouteResult } from "@/lib/directions";
 import { calculateFare, formatCurrency } from "@/lib/fareCalculator";
+import { checkTripSanity } from "@/lib/tripGeoGuard";
 import { useNotification } from "./NotificationContext";
 import { alertPassengerDriverArrived } from "@/lib/arrivalAlert";
 import { createJobId } from "@/lib/jobApi";
@@ -1891,6 +1893,18 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
     const fare = discount
       ? Math.round(calc.total * (1 - discount) * 100) / 100
       : calc.total;
+    const sanity = checkTripSanity({
+      distanceMeters: route.distanceMeters,
+      fareTotal: fare,
+    });
+    if (!sanity.ok) {
+      notify("Implausible trip", sanity.reason, "error");
+      return { route: null, fare: 0 };
+    }
+    if (sanity.warn) {
+      // Mid-ride: refuse silently-long routes rather than charge thousands.
+      notify("Long trip", sanity.warn, "warning");
+    }
     return { route, fare };
   };
 
@@ -2398,6 +2412,47 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       cancelled = true;
     };
   }, [authUser?.uid, ensureTripInHistory, patchDiag]);
+
+  // After Stripe "Go back to app" / AuthSession hang: verify pending session and restore ride.
+  useEffect(() => {
+    if (!hydrateReady) return;
+    let busy = false;
+    const tryPending = async () => {
+      if (busy) return;
+      busy = true;
+      try {
+        const { loadPendingStripeRestore, clearPendingStripeRestore } = await import(
+          "@/lib/pendingStripeRestore"
+        );
+        const { verifyAndDispatchBooking } = await import("@/lib/stripePayment");
+        const pending = await loadPendingStripeRestore();
+        if (!pending) return;
+        try {
+          await verifyAndDispatchBooking({
+            companyId: pending.companyId,
+            bookingId: pending.bookingId,
+            sessionId: pending.sessionId,
+          });
+          await clearPendingStripeRestore();
+          markPaymentConfirmed();
+        } catch (e) {
+          console.warn("[Ride] pending Stripe verify:", e);
+          // Still attempt resume — payment may already be confirmed server-side.
+        }
+        await resumeActiveRide(pending.companyId, pending.bookingId);
+      } finally {
+        busy = false;
+      }
+    };
+    void tryPending();
+    const onChange = (state: AppStateStatus) => {
+      if (state === "active") void tryPending();
+    };
+    const sub = AppState.addEventListener("change", onChange);
+    return () => sub.remove();
+    // resumeActiveRide / markPaymentConfirmed are stable enough for this recovery path
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydrateReady]);
 
   // Mid-session: if Active Ride is empty, try resume from newest Passengerjobs.
   useEffect(() => {

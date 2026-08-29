@@ -101,6 +101,15 @@ export async function openStripeCheckout(params: StripeCheckoutParams): Promise<
   if (!url) throw new Error("No checkout URL returned from server.");
   if (!sessionId) throw new Error("No Stripe session id returned from server.");
 
+  // Survive AuthSession hang / task-switch: stripe-return + AppState hydrate can verify.
+  const { savePendingStripeRestore } = await import("@/lib/pendingStripeRestore");
+  await savePendingStripeRestore({
+    bookingId: params.bookingId,
+    companyId: params.cid,
+    sessionId,
+    at: Date.now(),
+  });
+
   if (Platform.OS === "web") {
     await Linking.openURL(url);
   } else {
@@ -185,5 +194,12 @@ export async function verifyAndDispatchBooking(params: VerifyDispatchParams): Pr
 
   if (!res.ok) {
     throw new Error(json?.error ?? `Payment confirmation failed (${res.status}).`);
+  }
+
+  try {
+    const { clearPendingStripeRestore } = await import("@/lib/pendingStripeRestore");
+    await clearPendingStripeRestore();
+  } catch {
+    /* ignore */
   }
 }

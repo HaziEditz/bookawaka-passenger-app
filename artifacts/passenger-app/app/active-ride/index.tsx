@@ -18,9 +18,11 @@ import { PlacesAutocomplete } from "@/components/PlacesAutocomplete";
 import { RouteMap } from "@/components/RouteMap";
 import { useRide, SearchPhase, computeCancelPolicy, haversineKm } from "@/context/RideContext";
 import { useNotification } from "@/context/NotificationContext";
+import { useCompanies } from "@/context/CompaniesContext";
 import { formatCurrency } from "@/lib/fareCalculator";
 import { useColors } from "@/hooks/useColors";
 import { PlaceDetail } from "@/lib/googlePlaces";
+import { resolvePlacesBias, INVERCARGILL_PLACES_BIAS } from "@/lib/placesBias";
 
 const STATUS_LABELS: Record<string, string> = {
   confirmed: "Driver confirmed",
@@ -71,8 +73,19 @@ export default function ActiveRideScreen() {
   const colors = useColors();
   const { notify } = useNotification();
   const { activeRide, driverLocation, cancelRide, addStop, editDestination, clearRide, signalImComing, recordCompletedTripHistory, hydrateReady, resumeActiveRide } = useRide();
+  const { companies } = useCompanies();
   const params = useLocalSearchParams<{ booking?: string; cid?: string; companyId?: string }>();
   const insets = useSafeAreaInsets();
+  const placesBias = useMemo(() => {
+    const cid = String(activeRide?.companyId || "").trim();
+    const co = companies.find((c) => c.id === cid);
+    if (!co) return INVERCARGILL_PLACES_BIAS;
+    return resolvePlacesBias({
+      city: (co as { city?: string }).city,
+      country: (co as { country?: string }).country,
+      companyName: co.name,
+    });
+  }, [activeRide?.companyId, companies]);
   const elapsed = useElapsedTime(activeRide?.status === "searching");
   const [chatOpen, setChatOpen] = useState(false);
   const [cancelConfirm, setCancelConfirm] = useState(false);
@@ -98,11 +111,14 @@ export default function ActiveRideScreen() {
   }, [hydrateReady, activeRide, params.booking, params.cid, params.companyId, resumeActiveRide]);
 
   // Wait for cold-start / Passengerjobs recover before treating null as "no ride".
+  // Keep booking/cid params in flight — do not bounce home while a deep-link resume is pending.
   useEffect(() => {
-    if (settled && hydrateReady && !activeRide) {
+    const booking = String(params.booking || "").trim();
+    const cid = String(params.cid || params.companyId || "").trim();
+    if (settled && hydrateReady && !activeRide && !(booking && cid)) {
       router.replace("/(tabs)");
     }
-  }, [settled, hydrateReady, activeRide]);
+  }, [settled, hydrateReady, activeRide, params.booking, params.cid, params.companyId]);
 
   // Show ride-complete modal when dispatcher/driver marks the trip done.
   // Uses a modal (not auto-navigate) so an accidental "complete" from the
@@ -492,6 +508,9 @@ export default function ActiveRideScreen() {
               onSelect={handleEditDestination}
               icon="navigation"
               iconColor={colors.primary}
+              locationBias={placesBias}
+              nearPickup={activeRide.pickup.location}
+              role="destination"
             />
             <Text style={[styles.fareLabel, { color: colors.mutedForeground, marginTop: 10, marginBottom: 4 }]}>
               Add a stop
@@ -502,6 +521,9 @@ export default function ActiveRideScreen() {
               onSelect={handleAddStop}
               icon="map-pin"
               iconColor={colors.warning}
+              locationBias={placesBias}
+              nearPickup={activeRide.pickup.location}
+              role="stop"
             />
           </View>
         )}

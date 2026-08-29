@@ -22,6 +22,8 @@ router.get("/places/autocomplete", async (req, res) => {
     if (location && typeof location === "string") {
       params.set("location", location);
       params.set("radius", typeof radius === "string" ? radius : "50000");
+      // Match passenger client: hard fence around company city (not soft bias only).
+      params.set("strictbounds", "true");
     }
     const response = await fetch(
       `https://maps.googleapis.com/maps/api/place/autocomplete/json?${params}`
