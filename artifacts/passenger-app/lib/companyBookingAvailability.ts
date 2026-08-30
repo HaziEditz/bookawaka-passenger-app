@@ -3,7 +3,11 @@
  * Individual driver online/busy is intentionally ignored (Option 1 pool).
  */
 
-export const DISPATCH_HEARTBEAT_STALE_MS = 5 * 60 * 1000;
+/**
+ * Keep in sync with website api-server companyBookingAvailability.ts.
+ * 12m (not 5m): backgrounded dispatch tabs throttle the 60s heartbeat timer.
+ */
+export const DISPATCH_HEARTBEAT_STALE_MS = 12 * 60 * 1000;
 
 export type ActiveDispatcherSession = {
   lastSeen?: number | string | null;
