@@ -236,10 +236,23 @@ interface RideContextType {
     onRetry?: (attempt: number, total: number) => void,
   ) => Promise<string>;
   cancelRide: (cancelOutcome?: "refund" | "free" | "charge", reason?: string) => Promise<void>;
-  abortRide: () => void;
+  /** Cleanup unpaid holds only — never cancels a booking that is already paid. */
+  abortRide: () => Promise<void>;
+  /** Drop the abort handle after a successful create/pay so later errors cannot cancel the job. */
+  releaseAbortHandle: () => void;
   addStop: (stop: Stop) => Promise<boolean>;
   /** Change dropoff while ride is still editable (before arrived / onboard). */
   editDestination: (place: PlaceDetail) => Promise<boolean>;
+  /**
+   * Edit a scheduled/later booking in place (no activeRide required).
+   * Fans out via INVT passenger-edit + bookawaka booking/edit (emails + history).
+   */
+  editScheduledBooking: (args: {
+    companyId: string;
+    jobId: string;
+    editFields: Record<string, unknown>;
+    changeSummary?: string[];
+  }) => Promise<boolean>;
   completeRide: (rating: number, tip: number) => Promise<void>;
   /** Clear local ride without writing completion (Skip on complete modal). */
   clearRide: () => void;
@@ -1148,18 +1161,47 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       PickupLng: params.pickup.location.longitude,
       pickupLat: params.pickup.location.latitude,
       pickupLng: params.pickup.location.longitude,
-      // Dropoff
+      // Dropoff (canonical DropAddress aliases for dispatch + Closed Job + emails)
       DropoffAddress: params.destination.address,
       dropoffAddress: params.destination.address,
+      DropAddress: params.destination.address,
+      dropoff: params.destination.address,
       DropoffLat: params.destination.location.latitude,
       DropoffLng: params.destination.location.longitude,
       dropoffLat: params.destination.location.latitude,
       dropoffLng: params.destination.location.longitude,
+      DropLatLng: `${params.destination.location.latitude},${params.destination.location.longitude}`,
+      PickAddress: params.pickup.address,
+      // Via / stops — must be on RTDB create so dispatch sees them with the fare
+      ...(params.stops.length > 0
+        ? {
+            Stops: params.stops.map((s) => s.place.address),
+            stops: params.stops.map((s) => ({
+              id: s.id,
+              address: s.place.address,
+              lat: s.place.location.latitude,
+              lng: s.place.location.longitude,
+            })),
+            Nextstop: String(params.stops.length),
+            nextstopdata: JSON.stringify(
+              params.stops.map((s) => ({
+                id: s.id,
+                address: s.place.address,
+                lat: s.place.location.latitude,
+                lng: s.place.location.longitude,
+              })),
+            ),
+          }
+        : { Stops: [], Nextstop: "0", nextstopdata: "[]" }),
+      // Email identity for company confirmation (all payment methods)
+      PassengerEmail: authUser?.email ?? fbUser?.email ?? "",
+      passengerEmail: authUser?.email ?? fbUser?.email ?? "",
       // Booking details
       VehicleType: params.vehicleType,
       vehicleType: params.vehicleType,
       EstimatedFare: params.fare,
       estimatedFare: params.fare,
+      CustomeRate: params.fare,
       PaymentMethod: params.payment,
       paymentMethod: params.payment,
       ...(params.pickupNote && params.pickupNote.trim()
@@ -1269,9 +1311,6 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       passengerUid: passengerUid,
       PassengerUid: passengerUid,
       PassengerId: passengerUid,
-      passengerId: passengerUid,
-      PassengerPhone: passengerPhone,
-      passengerPhone,
     };
 
     // ── Send booking to API — all Firebase writes happen server-side ─────
@@ -1843,37 +1882,99 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
     dispatchOverrideRef.current = false;
   };
 
-  const abortRide = () => {
+  const releaseAbortHandle = () => {
+    pendingJobRef.current = null;
+  };
+
+  const abortRide = async () => {
     // Use the ref first — it is set synchronously in startRide before any state updates,
     // so it reliably holds the job info even if React hasn't flushed activeRide yet.
-    const pending = pendingJobRef.current ?? (activeRide ? { companyId: activeRide.companyId, jobId: activeRide.firestoreId } : null);
+    const pending =
+      pendingJobRef.current ??
+      (activeRide ? { companyId: activeRide.companyId, jobId: activeRide.firestoreId } : null);
     stopMockDriverTimer();
     stopSimulation();
     stopFirestoreListener();
     stopRtdbJobListener();
+
     if (pending) {
-      const cancelledAt = new Date().toISOString();
-      // Early abort (pre-accept, no driver assigned) — write directly as Cancelled via API
-      // Use same field values the dispatcher expects — keep original strings for compat
-      cancelBookingOnServer({
-        companyId: pending.companyId,
-        jobId: pending.jobId,
-        cancelFields: {
-          Status: "Cancelled",
-          status: "Cancelled",
-          CancelledBy: "passenger",
-          cancelledBy: "passenger",
-          CancelledAt: cancelledAt,
-          cancelledAt,
-        },
-      }).catch((e) => console.warn("[BookingAPI] Abort cancel failed:", (e as Error).message));
+      // Paid-safe gate (ASAP + scheduled, any payment method): never cancel a booking
+      // that Stripe/verify already marked paid — that was the scheduled-card auto-cancel bug.
+      let alreadyPaid = false;
+      try {
+        const [abSnap, pjSnap] = await Promise.all([
+          rtdbGet(rtdbRef(rtdb, `allbookings/${pending.companyId}/${pending.jobId}`)).catch(() => null),
+          rtdbGet(rtdbRef(rtdb, `pendingjobs/${pending.companyId}/${pending.jobId}`)).catch(() => null),
+        ]);
+        const ab = abSnap?.exists?.() ? (abSnap.val() as Record<string, unknown>) : null;
+        const pj = pjSnap?.exists?.() ? (pjSnap.val() as Record<string, unknown>) : null;
+        const pay = String(
+          ab?.paymentStatus ?? ab?.PaymentStatus ?? pj?.paymentStatus ?? pj?.PaymentStatus ?? "",
+        )
+          .trim()
+          .toLowerCase();
+        alreadyPaid = pay === "paid" || pay === "confirmed";
+      } catch (e) {
+        console.warn("[abortRide] paid-check failed — refusing cancel to avoid wiping a live booking:", e);
+        alreadyPaid = true;
+      }
+
+      if (alreadyPaid) {
+        console.warn(
+          `[abortRide] skip cancel — ${pending.companyId}/${pending.jobId} already paid`,
+        );
+      } else {
+        const cancelledAt = new Date().toISOString();
+        try {
+          await cancelBookingOnServer({
+            companyId: pending.companyId,
+            jobId: pending.jobId,
+            cancelFields: {
+              Status: "Cancelled",
+              status: "Cancelled",
+              CancelledBy: "passenger",
+              cancelledBy: "passenger",
+              CancelledAt: cancelledAt,
+              cancelledAt,
+              CancelReason: "abort_unpaid_hold",
+            },
+            mode: "abort",
+          });
+        } catch (e) {
+          console.warn("[BookingAPI] Abort cancel failed:", (e as Error).message);
+        }
+      }
     }
+
     pendingJobRef.current = null;
     listenersWiredForRef.current = "";
     void clearActiveRideSnapshot();
     setActiveRide(null);
     setDriverLocation(null);
     dispatchOverrideRef.current = false;
+  };
+
+  /** In-place edit for scheduled/later jobs (and ASAP when activeRide is absent). */
+  const editScheduledBooking = async (args: {
+    companyId: string;
+    jobId: string;
+    editFields: Record<string, unknown>;
+    changeSummary?: string[];
+  }): Promise<boolean> => {
+    try {
+      await editBookingOnServer({
+        companyId: args.companyId,
+        jobId: args.jobId,
+        editFields: args.editFields,
+        changeSummary: args.changeSummary,
+        notifyCompany: true,
+      });
+      return true;
+    } catch (e) {
+      console.warn("[editScheduledBooking] failed:", (e as Error).message);
+      notify("Could not save changes", (e as Error).message || "Try again.", "error");
+      return false;
+    }
   };
 
   const _rideEditableForTripChange = (status: RideStatus | undefined) =>
@@ -2755,8 +2856,10 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
         startRide,
         cancelRide,
         abortRide,
+        releaseAbortHandle,
         addStop,
         editDestination,
+        editScheduledBooking,
         completeRide,
         clearRide,
         recordCompletedTripHistory,

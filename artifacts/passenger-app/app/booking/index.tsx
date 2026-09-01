@@ -50,7 +50,7 @@ type Step = "location" | "vehicle" | "confirm";
 export default function BookingScreen() {
   const colors = useColors();
   const { user, firebaseUser, updateWallet } = useAuth();
-  const { startRide, abortRide, markPaymentConfirmed } = useRide();
+  const { startRide, abortRide, releaseAbortHandle, markPaymentConfirmed } = useRide();
   const { notify } = useNotification();
   const { settings: tmSettings } = useTMSettings();
   const { platformCashEnabled } = useAppConfig();
@@ -150,13 +150,6 @@ export default function BookingScreen() {
   useEffect(() => { setResolvedBA(null); setBaError(null); }, [businessAccountInput, purchaseOrderInput]);
   useEffect(() => { setResolvedACC(null); setAccError(null); }, [accClaimInput]);
 
-  // Non-TM only: if platform cash is disabled while Cash is selected, fall back to Card.
-  // TM remainder always keeps Cash available (business rule).
-  useEffect(() => {
-    if (!isTM && !platformCashEnabled && payment === "cash") {
-      setPayment("card");
-    }
-  }, [isTM, platformCashEnabled, payment]);
   useEffect(() => { setResolvedGiftCard(null); setGiftCardError(null); }, [giftCardInput]);
 
   // When a payment method is deselected, clear its state
@@ -260,6 +253,14 @@ export default function BookingScreen() {
 
   // TM state
   const [isTM, setIsTM] = useState(false);
+
+  // Non-TM only: if platform cash is disabled while Cash is selected, fall back to Card.
+  // TM remainder always keeps Cash available (business rule).
+  useEffect(() => {
+    if (!isTM && !platformCashEnabled && payment === "cash") {
+      setPayment("card");
+    }
+  }, [isTM, platformCashEnabled, payment]);
   const [tmPassengers, setTMPassengers] = useState<TMPassenger[]>([]);
   const [scannerOpen, setScannerOpen] = useState(false);
   const [editingPassengerId, setEditingPassengerId] = useState<string | null>(null);
@@ -859,31 +860,8 @@ export default function BookingScreen() {
         }).catch(() => {});
       }
 
-      // Fire-and-forget: notify company owner by email ONLY for scheduled (pre-booked) rides.
-      // ASAP bookings go straight to the dispatcher via RTDB — no email needed.
-      if (scheduledAt && effectiveCompany.ownerEmail) {
-        const baseDomain = process.env["EXPO_PUBLIC_DOMAIN"] ?? "";
-        const apiBase = baseDomain ? `https://${baseDomain}` : "";
-        fetch(`${apiBase}/api/notify-booking`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            companyEmail: effectiveCompany.ownerEmail,
-            companyName: effectiveCompany.name,
-            bookingId,
-            passengerName: user?.name ?? firebaseUser?.displayName ?? "Passenger",
-            passengerEmail: user?.email ?? firebaseUser?.email ?? undefined,
-            passengerPhone: firebaseUser?.phoneNumber ?? undefined,
-            pickup: pickup.address,
-            destination: destination.address,
-            stops: stops.map((s) => s.place.address),
-            vehicleType: VEHICLE_LABELS[vehicleType],
-            fare: formatCurrency(discountedFare ?? fare?.total ?? 0),
-            payment,
-            scheduledFor: scheduledAt.toISOString(),
-          }),
-        }).catch(() => {});
-      }
+      // Create API (+ Stripe verify for card) already send company confirmation emails
+      // for all payment methods. Do not double-send via notify-booking here.
 
       if (payment === "card") {
         // Wallet covers full fare — no Stripe; mark paid + release to dispatch.
@@ -939,6 +917,7 @@ export default function BookingScreen() {
       }
 
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      releaseAbortHandle();
       if (scheduledAt) {
         router.replace("/(tabs)/scheduled");
       } else {
@@ -953,14 +932,13 @@ export default function BookingScreen() {
     } catch (err: any) {
       if (err instanceof StripeCheckoutCancelledError || err?.name === "StripeCheckoutCancelledError") {
         // Explicit Stripe cancel URL only — safe to clear the unpaid hold.
-        if (rideStarted) abortRide();
+        if (rideStarted) await abortRide();
         setStripeError("Payment was cancelled. Your booking was not charged — you can try again.");
         return;
       }
       if (rideStarted) {
-        // abortRide sends the cancel to the server via API (thin-client rule — no direct RTDB writes).
-        // Only after verify failure / hard errors — never after a successful pay + deep-link dismiss.
-        abortRide();
+        // abortRide is paid-safe — skips cancel when Stripe/verify already marked paid.
+        await abortRide();
       }
       const raw: string = err?.message ?? "";
       const friendly = raw.toLowerCase().includes("booking service") || raw.toLowerCase().includes("unavailable")

@@ -1,6 +1,6 @@
 import { Feather } from "@expo/vector-icons";
 import { router } from "expo-router";
-import { onValue, ref, set } from "firebase/database";
+import { onValue, ref } from "firebase/database";
 import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
@@ -14,6 +14,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAuth } from "@/context/AuthContext";
+import { cancelBookingOnServer } from "@/lib/bookingApi";
 import { rtdb } from "@/lib/firebase";
 import { FALLBACK_TZ } from "@/lib/timezone";
 import { formatCurrency } from "@/lib/fareCalculator";
@@ -133,22 +134,33 @@ export default function ScheduledScreen() {
   const doCancel = async (job: ScheduledJob) => {
     if (!firebaseUser?.uid) return;
     setCancelling(job.id);
-    const uid = firebaseUser.uid;
     const cid = job.CompanyId ?? job.companyId ?? "";
     const payment = (job.PaymentMethod ?? job.paymentMethod ?? "cash").toLowerCase();
     const fare = job.EstimatedFare ?? job.estimatedFare ?? 0;
     const willRefund = (payment === "card" || payment === "wallet" || payment === "gift_card") && fare > 0;
     try {
-      await set(ref(rtdb, `Passengerjobs/${uid}/${job.id}/Status`), "Cancelled");
-      await set(ref(rtdb, `Passengerjobs/${uid}/${job.id}/status`), "Cancelled");
-      if (cid) {
-        await set(ref(rtdb, `pendingjobs/${cid}/${job.id}/Status`), "Cancelled");
-        await set(ref(rtdb, `pendingjobs/${cid}/${job.id}/status`), "Cancelled");
-      }
+      if (!cid) throw new Error("Missing company for this booking");
+      const cancelledAt = new Date().toISOString();
+      await cancelBookingOnServer({
+        companyId: cid,
+        jobId: job.id,
+        passengerUid: firebaseUser.uid,
+        mode: "intentional",
+        cancelFields: {
+          Status: "Cancelled",
+          status: "Cancelled",
+          CancelledBy: "passenger",
+          cancelledBy: "passenger",
+          CancelledAt: cancelledAt,
+          cancelledAt,
+          CancelReason: "passenger_scheduled_cancel",
+        },
+      });
       if (willRefund) {
         updateWallet(fare).catch(() => {});
       }
-    } catch {
+    } catch (e) {
+      Alert.alert("Cancel failed", (e as Error).message || "Try again.");
     } finally {
       setCancelling(null);
     }
@@ -177,27 +189,15 @@ export default function ScheduledScreen() {
   };
 
   const editJob = (job: ScheduledJob) => {
-    Alert.alert(
-      "Edit Booking",
-      "This will cancel your current booking and open a new scheduling form so you can make changes.",
-      [
-        { text: "Go Back", style: "cancel" },
-        {
-          text: "Continue",
-          onPress: async () => {
-            if (firebaseUser?.uid) {
-              const uid = firebaseUser.uid;
-              const cid = job.CompanyId ?? job.companyId ?? "";
-              await set(ref(rtdb, `Passengerjobs/${uid}/${job.id}/Status`), "Cancelled").catch(() => {});
-              if (cid) {
-                await set(ref(rtdb, `pendingjobs/${cid}/${job.id}/Status`), "Cancelled").catch(() => {});
-              }
-            }
-            router.push({ pathname: "/booking", params: { initialScheduled: "true" } });
-          },
-        },
-      ],
-    );
+    const cid = job.CompanyId ?? job.companyId ?? "";
+    if (!cid) {
+      Alert.alert("Cannot edit", "This booking is missing a company id.");
+      return;
+    }
+    router.push({
+      pathname: "/edit-scheduled",
+      params: { jobId: job.id, companyId: cid },
+    });
   };
 
   if (isLoading || loading) {

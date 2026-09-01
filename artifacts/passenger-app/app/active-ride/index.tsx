@@ -108,22 +108,42 @@ export default function ActiveRideScreen() {
   }, []);
 
   // Deep link / Stripe return: restore by booking id before giving up.
+  const [resumeAttempted, setResumeAttempted] = useState(false);
+  const [resumeFailed, setResumeFailed] = useState(false);
   useEffect(() => {
     const booking = String(params.booking || "").trim();
     const cid = String(params.cid || params.companyId || "").trim();
-    if (!hydrateReady || activeRide || !booking || !cid) return;
-    void resumeActiveRide(cid, booking);
-  }, [hydrateReady, activeRide, params.booking, params.cid, params.companyId, resumeActiveRide]);
+    if (!hydrateReady || activeRide || !booking || !cid || resumeAttempted) return;
+    setResumeAttempted(true);
+    void (async () => {
+      const ok = await resumeActiveRide(cid, booking);
+      if (!ok) setResumeFailed(true);
+    })();
+  }, [hydrateReady, activeRide, params.booking, params.cid, params.companyId, resumeActiveRide, resumeAttempted]);
 
   // Wait for cold-start / Passengerjobs recover before treating null as "no ride".
-  // Keep booking/cid params in flight — do not bounce home while a deep-link resume is pending.
+  // If resume refused (Cancelled / unpaid hold / missing), leave the spinner —
+  // prefer Scheduled tab when deep-link looked like a booking restore.
   useEffect(() => {
     const booking = String(params.booking || "").trim();
     const cid = String(params.cid || params.companyId || "").trim();
     if (settled && hydrateReady && !activeRide && !(booking && cid)) {
       router.replace("/(tabs)");
+      return;
     }
-  }, [settled, hydrateReady, activeRide, params.booking, params.cid, params.companyId]);
+    if (settled && hydrateReady && !activeRide && booking && cid && resumeFailed) {
+      router.replace("/(tabs)/scheduled");
+    }
+  }, [settled, hydrateReady, activeRide, params.booking, params.cid, params.companyId, resumeFailed]);
+
+  // Hard fallback: never spin forever if resume hangs.
+  useEffect(() => {
+    const booking = String(params.booking || "").trim();
+    const cid = String(params.cid || params.companyId || "").trim();
+    if (!booking || !cid || activeRide) return;
+    const t = setTimeout(() => setResumeFailed(true), 12_000);
+    return () => clearTimeout(t);
+  }, [params.booking, params.cid, params.companyId, activeRide]);
 
   // Show ride-complete modal when dispatcher/driver marks the trip done.
   // Uses a modal (not auto-navigate) so an accidental "complete" from the
@@ -175,7 +195,7 @@ export default function ActiveRideScreen() {
         <View style={[styles.container, { backgroundColor: colors.background, padding: 16, paddingTop: insets.top + 24, alignItems: "center", justifyContent: "center" }]}>
           <ActivityIndicator />
           <Text style={{ color: colors.mutedForeground, fontFamily: "Inter_500Medium", marginTop: 12, textAlign: "center" }}>
-            Restoring your ride…
+            {resumeFailed ? "Could not restore this ride — opening Scheduled…" : "Restoring your ride…"}
           </Text>
         </View>
       );
