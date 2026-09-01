@@ -919,7 +919,13 @@ export default function BookingScreen() {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       releaseAbortHandle();
       if (scheduledAt) {
-        router.replace("/(tabs)/scheduled");
+        // Later: never open Finding-driver / Active Ride — confirm and return Home.
+        Alert.alert(
+          "Booking confirmed",
+          "Booking done, company notified — check your Schedule tab to edit or cancel.",
+          [{ text: "OK", onPress: () => router.replace("/(tabs)") }],
+        );
+        router.replace("/(tabs)");
       } else {
         router.replace({
           pathname: "/active-ride",

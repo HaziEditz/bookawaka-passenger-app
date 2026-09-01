@@ -36,6 +36,30 @@ export function isUnpaidCardHold(opts: {
   return st === "pendingpayment" || st === "pending_payment";
 }
 
+/**
+ * Pre-dispatch Later booking — lives on Schedule tab only.
+ * Must NOT become Active Ride / "Finding your driver…".
+ * Once status advances to Pending/Offered/Assigned/… (release window), ASAP Active Ride is correct.
+ * Note: do NOT treat generic "Waiting" as scheduled — ASAP pool jobs use Waiting → searching.
+ */
+export function isPreDispatchScheduledJob(
+  statusRaw: unknown,
+  job?: Record<string, unknown> | null,
+): boolean {
+  const st = String(statusRaw || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s]+/g, "");
+  if (st === "scheduled") return true;
+  if (st === "pendingpayment" || st === "paymentpending") {
+    const schedMs = Number(
+      job?.ScheduledFor ?? job?.scheduledFor ?? job?.ScheduledForMs ?? 0,
+    );
+    if (Number.isFinite(schedMs) && schedMs > Date.now() + 60_000) return true;
+  }
+  return false;
+}
+
 export function mapJobStatusToRide(raw: unknown): RideStatus | null {
   const s = String(raw || "").trim();
   const lower = s.toLowerCase();
@@ -65,7 +89,8 @@ export function mapJobStatusToRide(raw: unknown): RideStatus | null {
     active: "in_progress",
     ontrip: "in_progress",
     "on trip": "in_progress",
-    scheduled: "searching",
+    // Later bookings stay on Schedule — never "Finding your driver…"
+    scheduled: "scheduled",
   };
   return map[lower] || map[s] || null;
 }
@@ -140,11 +165,15 @@ export function buildActiveRideFromJobNodes(
   ) {
     return null;
   }
+  // Later / Scheduled (pre-release) — Schedule tab only; never Active Ride search UI.
+  if (isPreDispatchScheduledJob(statusRaw, d)) return null;
   const mapped = mapJobStatusToRide(statusRaw) || "searching";
+  if (mapped === "scheduled") return null;
   const payStatus = String(d.PaymentStatus || d.paymentStatus || "").toLowerCase();
   const driverName = String(d.DriverName || d.driverName || d.AssignedDriverName || "").trim();
   const driverId = String(d.DriverId || d.driverId || "").trim();
   const hasDriver = !!(driverName || (driverId && driverId !== "0" && driverId !== "-1"));
+  const schedMs = Number(d.ScheduledFor ?? d.scheduledFor ?? d.ScheduledForMs ?? 0);
   return {
     id: jobId,
     firestoreId: jobId,
@@ -159,6 +188,8 @@ export function buildActiveRideFromJobNodes(
     paymentStatus: payStatus === "paid" || payStatus === "confirmed" ? "confirmed" : "pending",
     pickupPin: String(d.PickupPin || d.pickupPin || "") || undefined,
     trackingToken: String(d.trackingToken || d.TrackingToken || "") || undefined,
+    scheduledAt:
+      Number.isFinite(schedMs) && schedMs > 0 ? new Date(schedMs).toISOString() : undefined,
     driver: hasDriver
       ? {
           name: driverName || `Driver ${driverId}`,

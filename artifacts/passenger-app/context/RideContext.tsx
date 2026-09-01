@@ -39,6 +39,7 @@ import {
 import {
   buildActiveRideFromJobNodes,
   historyFromJobNodes,
+  isPreDispatchScheduledJob,
   isTerminalJobStatus,
   isUnpaidCardHold,
   pickAuthoritativeStatus,
@@ -2226,6 +2227,22 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
           decision: `resume ${bid}: unpaid hold → hide Active Ride`,
           probes: [probe],
         });
+        return false;
+      }
+      // Later booking still pre-dispatch — Schedule tab only (never Finding driver / Active).
+      if (isPreDispatchScheduledJob(statusRaw, merged)) {
+        probe.decision = "skip — pre-dispatch Scheduled/Waiting (Schedule tab)";
+        patchDiag({
+          phase: "resumeActiveRide",
+          decision: `resume ${bid}: scheduled → no Active Ride`,
+          probes: [probe],
+        });
+        // Clear stale ASAP Active Ride if hydrate previously mis-mapped Scheduled → searching.
+        setActiveRide((prev) => {
+          if (prev && String(prev.firestoreId || prev.id) === bid) return null;
+          return prev;
+        });
+        void clearActiveRideSnapshot().catch(() => undefined);
         return false;
       }
       const ride = buildActiveRideFromJobNodes(bid, pax, ab, pend);

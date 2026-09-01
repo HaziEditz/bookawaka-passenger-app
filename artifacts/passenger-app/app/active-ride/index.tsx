@@ -121,8 +121,15 @@ export default function ActiveRideScreen() {
     })();
   }, [hydrateReady, activeRide, params.booking, params.cid, params.companyId, resumeActiveRide, resumeAttempted]);
 
+  // Later booking mis-routed to Active Ride — bounce to Schedule (never Finding driver dead-end).
+  useEffect(() => {
+    if (activeRide?.status === "scheduled") {
+      router.replace("/(tabs)/scheduled");
+    }
+  }, [activeRide?.status]);
+
   // Wait for cold-start / Passengerjobs recover before treating null as "no ride".
-  // If resume refused (Cancelled / unpaid hold / missing), leave the spinner —
+  // If resume refused (Cancelled / unpaid hold / Scheduled / missing), leave the spinner —
   // prefer Scheduled tab when deep-link looked like a booking restore.
   useEffect(() => {
     const booking = String(params.booking || "").trim();
