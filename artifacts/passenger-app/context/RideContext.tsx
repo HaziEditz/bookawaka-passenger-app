@@ -1389,10 +1389,11 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
     // The dispatcher may write updates to pendingjobs OR allbookings — we
     // listen to both so we don't miss whichever path the dispatcher uses.
     const RTDB_STATUS_MAP: Record<string, RideStatus> = {
-      // NOTE: "Offered/Dispatched/Accepted/Assigned" are intentionally NOT mapped here.
-      // They mean "the dispatcher system queued the job" — NOT "a driver accepted".
-      // Status only moves to "confirmed" when an actual DriverName arrives (see driverName block below).
-      // These statuses update searchPhase ("offered"/"queued") for queue-progress feedback.
+      // Assigned/Accepted → confirmed so we leave "Finding your driver…" even when
+      // DriverName is missing from a sparse allbookings fanout (#86926090112 freeze).
+      // Offered/Dispatched still only advance searchPhase until a driver id/name lands.
+      Assigned: "confirmed",   assigned: "confirmed",
+      Accepted: "confirmed",   accepted: "confirmed",
       // Driver en-route to pickup
       Picking: "on_the_way",   picking: "on_the_way",
       Enroute: "on_the_way",   enroute: "on_the_way",
@@ -1503,7 +1504,11 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
         d.Rego ?? d.rego ?? "—"
       ).trim() || "—";
 
-      if (driverName) {
+      // Confirm on DriverName OR a real DriverId (allbookings sometimes omits name).
+      const hasDriverIdentity =
+        !!driverName ||
+        (!!driverIdOnly && driverIdOnly !== "0" && driverIdOnly !== "-1");
+      if (hasDriverIdentity) {
         // Start live GPS listener: online/{cid}/{vehicleId}/current → {lat, lng}
         const rawVehicleId = String(
           d.VehicleId ?? d.vehicleId ?? d.vehicleid ??
@@ -1528,7 +1533,14 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
         }
 
         setActiveRide((prev) => {
-          if (!prev || (prev.driver && prev.driver.name === driverName && prev.driver.cab === vehicleLabel && prev.driver.plate !== "—")) return prev;
+          const niceName = driverDisplayName || (driverIdOnly ? `Driver ${driverIdOnly}` : "Driver");
+          if (!prev || (prev.driver && prev.driver.name === niceName && prev.driver.cab === vehicleLabel && prev.driver.plate !== "—")) {
+            // Still leave searching when we only had an id and status was stuck.
+            if (prev && prev.status === "searching" && hasDriverIdentity) {
+              return { ...prev, status: "confirmed", searchPhase: undefined };
+            }
+            return prev;
+          }
           if (prev.status === "cancel_requested" || prev.status === "cancelled") return prev;
           const driverLat = Number(d.DriverLat ?? d.driverLat ?? d.driverlat ?? 0);
           const driverLng = Number(d.DriverLng ?? d.driverLng ?? d.driverlng ?? 0);
@@ -1536,7 +1548,6 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
             ? { latitude: driverLat, longitude: driverLng }
             : params.pickup.location;
           const startDist = haversineKm(loc, params.pickup.location);
-          const niceName = driverDisplayName || `Driver ${driverIdOnly}`;
           if (driverFoundNotifiedRef.current !== firestoreId) {
             driverFoundNotifiedRef.current = firestoreId;
             const etaMin = Number(d.ETA ?? d.eta ?? d.Eta);
@@ -1557,7 +1568,7 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
           }
           return {
             ...prev,
-            status: "confirmed",
+            status: prev.status === "searching" || prev.status === "confirmed" ? "confirmed" : prev.status,
             searchPhase: undefined,
             driver: { name: niceName, rating: 4.8, cab: vehicleLabel, plate: plateLabel, color: "", location: loc },
             acceptedAt: prev.acceptedAt ?? Date.now(),
