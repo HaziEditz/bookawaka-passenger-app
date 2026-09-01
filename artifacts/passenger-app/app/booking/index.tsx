@@ -923,7 +923,13 @@ export default function BookingScreen() {
           // Server writes paymentStatus "paid"; map locally so the ride UI shows Confirmed.
           markPaymentConfirmed();
         }
-        if (!scheduledAt) {
+        if (scheduledAt) {
+          notify(
+            "Ride Scheduled!",
+            "Payment confirmed — your booking is saved. We'll dispatch before your pickup time.",
+            "success",
+          );
+        } else {
           notify("Booking created", "We'll find you a driver — watch Active Ride for updates.", "info");
         }
       } else if (payment === "wallet") {

@@ -1013,17 +1013,9 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       setActiveRide(ride);
       // Must land before Stripe Custom Tab / process death — effect alone races Android kills.
       await saveActiveRideSnapshot(ride);
-      // Card holds: don't claim "searching" until Stripe confirms — payment can still fail.
-      if (params.payment !== "card") {
-        notify(
-          "Booking created",
-          "We'll find you a driver — watch this screen for queue updates.",
-          "info",
-        );
-      }
-    } else {
-      notify("Ride Scheduled!", "Your booking is saved — we'll dispatch before your pickup time.", "success");
+      // ASAP toast fires only AFTER create succeeds (and for card, after pay) — see below / booking screen.
     }
+    // Scheduled: never toast here — only after create succeeds and, for card, after payment.
 
     const passengerPhone =
       String(authUser?.phone || fbUser?.phoneNumber || "").trim();
@@ -1128,12 +1120,20 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       CreatedBy: "APP",
       PickupPin: pickupPin,
       pickupPin,
-      // Status logic:
-      //   Scheduled → future booking, held for timed dispatch
-      //   PendingPayment → card booking, held until Stripe payment is confirmed
-      //   Waiting → cash/wallet/account, dispatch immediately
-      Status: params.scheduledAt ? "Scheduled" : params.payment === "card" ? "PendingPayment" : "Waiting",
-      status: params.scheduledAt ? "Scheduled" : params.payment === "card" ? "PendingPayment" : "Waiting",
+      // Status logic (payment-first — matches website POST /bookings):
+      //   Card (ASAP or scheduled) → PendingPayment until Stripe confirms
+      //   Scheduled non-card → Scheduled (dispatch can see prebook in pendingjobs)
+      //   ASAP non-card → Waiting
+      Status: params.payment === "card"
+        ? "PendingPayment"
+        : params.scheduledAt
+          ? "Scheduled"
+          : "Waiting",
+      status: params.payment === "card"
+        ? "PendingPayment"
+        : params.scheduledAt
+          ? "Scheduled"
+          : "Waiting",
       // Passenger
       PassengerName: authUser?.name ?? fbUser?.displayName ?? "Passenger",
       passengerName: authUser?.name ?? fbUser?.displayName ?? "Passenger",
@@ -1260,10 +1260,18 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
         ? {
             ScheduledFor: new Date(params.scheduledAt).getTime(),
             scheduledFor: new Date(params.scheduledAt).getTime(),
+            ScheduledForMs: new Date(params.scheduledAt).getTime(),
             ScheduledAt: params.scheduledAt,
             scheduledAt: params.scheduledAt,
           }
         : {}),
+      // Identity stamps so verify-and-dispatch updates Passengerjobs/{firebaseUid}
+      passengerUid: passengerUid,
+      PassengerUid: passengerUid,
+      PassengerId: passengerUid,
+      passengerId: passengerUid,
+      PassengerPhone: passengerPhone,
+      passengerPhone,
     };
 
     // ── Send booking to API — all Firebase writes happen server-side ─────
@@ -1289,26 +1297,50 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
         firestoreData: bookingData as unknown as Record<string, unknown>,
       });
     } catch (apiErr) {
-      console.warn("[BookingAPI] API server unreachable — trying direct RTDB fallback:", (apiErr as Error).message);
+      console.warn("[BookingAPI] API create failed — trying direct RTDB fallback:", (apiErr as Error).message);
       try {
-        const hold =
-          String(rtdbJobData.Status || "").toLowerCase() === "pendingpayment";
+        const st = String(rtdbJobData.Status || "").toLowerCase().replace(/[_\s]/g, "");
+        const hold = st === "pendingpayment" || st === "paymentpending";
+        // Loud fallback: await ALL critical paths — no silent .catch that hides missing Passengerjobs.
         if (!hold) {
           await rtdbSet(rtdbRef(rtdb, `pendingjobs/${companyId}/${firestoreId}`), rtdbJobData);
         }
-        rtdbSet(rtdbRef(rtdb, `allbookings/${companyId}/${firestoreId}`), rtdbJobData).catch(() => {});
-        rtdbSet(rtdbRef(rtdb, `Passengerjobs/${passengerUid}/${firestoreId}`), rtdbJobData).catch(() => {});
-        console.warn("[BookingAPI] Fallback RTDB write succeeded — job dispatched via direct write");
+        await rtdbSet(rtdbRef(rtdb, `allbookings/${companyId}/${firestoreId}`), rtdbJobData);
+        await rtdbSet(rtdbRef(rtdb, `Passengerjobs/${passengerUid}/${firestoreId}`), rtdbJobData);
+        console.warn("[BookingAPI] Fallback RTDB write succeeded (pendingjobs/allbookings/Passengerjobs)");
+        notify(
+          "Saved offline",
+          "Booking service was slow — your trip was saved directly. If it does not appear in Scheduled, contact support with your booking ID.",
+          "warning",
+        );
       } catch (rtdbErr) {
-        // Both API and direct write failed — booking cannot reach dispatcher
         setActiveRide(null);
         pendingJobRef.current = null;
-        throw apiErr;
+        const detail = (rtdbErr as Error)?.message || (apiErr as Error).message;
+        notify("Booking failed", `Could not save your booking. ${detail}`, "error");
+        throw new Error(`Booking could not be saved: ${detail}`);
       }
     }
 
+    // Non-card ASAP: confirm only after create succeeded (card ASAP toasts after Stripe on booking screen).
+    if (!params.scheduledAt && params.payment !== "card") {
+      notify(
+        "Booking created",
+        "We'll find you a driver — watch this screen for queue updates.",
+        "info",
+      );
+    }
+    // Non-card scheduled: confirm only after create succeeded.
+    if (params.scheduledAt && params.payment !== "card") {
+      notify(
+        "Ride Scheduled!",
+        "Your booking is saved — we'll dispatch before your pickup time.",
+        "success",
+      );
+    }
+
     // ── Scheduled bookings: skip real-time listener and active-ride state ──
-    // The job sits in RTDB as Status:"Scheduled" until server-side dispatch fires.
+    // Job sits as PendingPayment (card) or Scheduled (cash) until pay / timed dispatch.
     if (params.scheduledAt) {
       return firestoreId;
     }

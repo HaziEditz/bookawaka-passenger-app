@@ -103,8 +103,18 @@ export default function ScheduledScreen() {
         const list: ScheduledJob[] = [];
         for (const [id, val] of Object.entries(raw)) {
           if (!val || typeof val !== "object") continue;
-          const status = String(val.Status ?? val.status ?? "").toLowerCase();
-          if (status !== "scheduled") continue;
+          const status = String(val.Status ?? val.status ?? "").toLowerCase().replace(/[_\s]/g, "");
+          const schedMs = Number(val.ScheduledFor ?? val.scheduledFor ?? val.ScheduledForMs ?? 0);
+          const hasFutureSched = Number.isFinite(schedMs) && schedMs > Date.now();
+          // Show confirmed Scheduled + in-flight card holds (PendingPayment) for later trips.
+          const visible =
+            status === "scheduled" ||
+            (hasFutureSched && (status === "pendingpayment" || status === "paymentpending"));
+          if (!visible) continue;
+          // Skip cancelled / completed even if ScheduledFor remains.
+          if (status === "cancelled" || status === "canceled" || status === "completed" || status === "closed") {
+            continue;
+          }
           list.push({ id, ...val });
         }
         list.sort((a, b) => {
