@@ -1,6 +1,7 @@
 import { Feather } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
+import * as Updates from "expo-updates";
 import { router, useLocalSearchParams } from "expo-router";
 import React, { useEffect, useMemo, useState } from "react";
 import {
@@ -311,7 +312,11 @@ export default function ActiveRideScreen() {
         </View>
       </View>
 
-      <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 120 }]}>
+      <ScrollView
+        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 120 }]}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+      >
 
         {/* Map */}
         <RouteMap
@@ -346,6 +351,16 @@ export default function ActiveRideScreen() {
                 Ref: {activeRide.firestoreId ?? activeRide.id}
               </Text>
             </View>
+            <Text style={{ fontSize: 10, color: "#9ca3af", marginTop: 6 }}>
+              Build{" "}
+              {Updates.updateId
+                ? String(Updates.updateId).slice(0, 8)
+                : Updates.isEmbeddedLaunch
+                  ? "embedded"
+                  : "local"}
+              {" · "}
+              {Updates.channel || "no-channel"}
+            </Text>
           </View>
         )}
 

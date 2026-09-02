@@ -282,7 +282,11 @@ export default function EditScheduledScreen() {
         <View style={{ width: 22 }} />
       </View>
 
-      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 120, gap: 14 }}>
+      <ScrollView
+        contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 120, gap: 14 }}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+      >
         <Text style={[styles.label, { color: colors.mutedForeground }]}>PICKUP</Text>
         <Text style={{ color: colors.foreground, fontFamily: "Inter_500Medium" }}>{pickup.address}</Text>
 
@@ -309,6 +313,7 @@ export default function EditScheduledScreen() {
           </View>
         ))}
         <PlacesAutocomplete
+          key={`add-stop-${stops.length}`}
           placeholder="Add a stop…"
           value=""
           onSelect={(p) => void onAddStop(p)}

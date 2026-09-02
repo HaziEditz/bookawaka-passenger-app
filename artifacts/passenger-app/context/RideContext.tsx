@@ -924,8 +924,15 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
         // Map dispatcher status strings → internal RideStatus
         const RAW_STATUS_MAP: Record<string, RideStatus> = {
           Offered:    "confirmed",
+          offered:    "confirmed",
+          Assigned:   "confirmed",
+          assigned:   "confirmed",
+          Accepted:   "confirmed",
+          accepted:   "confirmed",
           Picking:    "on_the_way",
+          picking:    "on_the_way",
           Busy:       "in_progress",
+          busy:       "in_progress",
           // also accept our own internal strings in case dispatch uses them
           confirmed:  "confirmed",
           on_the_way: "on_the_way",
@@ -936,7 +943,9 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
 
         const rawStatus = data.status as string | undefined;
         if (rawStatus && rawStatus !== "pending" && rawStatus !== "searching") {
-          const mapped = RAW_STATUS_MAP[rawStatus];
+          const mapped =
+            RAW_STATUS_MAP[rawStatus] ||
+            RAW_STATUS_MAP[String(rawStatus).toLowerCase()];
           if (mapped) {
             setActiveRide((prev) => {
               if (!prev || prev.status === mapped) return prev;
@@ -944,6 +953,28 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
               return { ...prev, status: mapped };
             });
           }
+        }
+
+        // Driver id alone (no name) — same gap as RTDB sparse fanout.
+        const fsDriverId = String((data as any).driverId ?? (data as any).DriverId ?? "").trim();
+        if (fsDriverId && fsDriverId !== "0" && fsDriverId !== "-1" && !data.driverName) {
+          setActiveRide((prev) => {
+            if (!prev || prev.status !== "searching") return prev;
+            return {
+              ...prev,
+              status: "confirmed",
+              searchPhase: undefined,
+              driver: prev.driver ?? {
+                name: `Driver ${fsDriverId}`,
+                rating: 4.8,
+                cab: String((data as any).vehicleId ?? "Vehicle"),
+                plate: "—",
+                color: "",
+                location: pickup,
+              },
+              acceptedAt: prev.acceptedAt ?? Date.now(),
+            };
+          });
         }
 
         // Recall detection — dispatcher backend writes RecallStatus: "Recalled" to rideStatus
@@ -1435,13 +1466,70 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
     };
 
     const handleRtdbUpdate = (snap: { exists(): boolean; val(): unknown }, source: string) => {
-      if (!snap.exists()) return;
+      // Accept path DELETEs pendingjobs right after Assigned fanout. Empty snap must
+      // not soft-fail — re-pull allbookings / Passengerjobs or we stay on Searching.
+      if (!snap.exists()) {
+        if (
+          source === "pendingjobs" &&
+          activeRideRef.current?.status === "searching" &&
+          pendingJobRef.current?.jobId === firestoreId
+        ) {
+          void (async () => {
+            try {
+              const [abSnap, paxSnap] = await Promise.all([
+                rtdbGet(rtdbRef(rtdb, `allbookings/${companyId}/${firestoreId}`)),
+                auth.currentUser?.uid
+                  ? rtdbGet(rtdbRef(rtdb, `Passengerjobs/${auth.currentUser.uid}/${firestoreId}`))
+                  : Promise.resolve(null),
+              ]);
+              const ab = abSnap && abSnap.exists() ? (abSnap.val() as Record<string, unknown>) : null;
+              const pax = paxSnap && paxSnap.exists() ? (paxSnap.val() as Record<string, unknown>) : null;
+              const merged = { ...(pax || {}), ...(ab || {}) };
+              if (Object.keys(merged).length) {
+                handleRtdbUpdate(
+                  { exists: () => true, val: () => merged },
+                  ab ? "allbookings-after-pending-delete" : "passengerjobs-after-pending-delete",
+                );
+              }
+            } catch (e) {
+              console.warn("[Dispatch] pendingjobs delete refresh failed:", e);
+            }
+          })();
+        }
+        return;
+      }
       const d = snap.val() as Record<string, unknown>;
 
       // Log what the dispatcher actually sent so we can see the real field names
-      console.log(`[Dispatch:${source}] keys=${Object.keys(d).join(",")} Status=${d.Status ?? d.status} DriverName=${d.DriverName ?? d.driverName ?? d.drivername} DriverId=${d.DriverId ?? d.driverId ?? d.driverid}`);
+      console.log(`[Dispatch:${source}] keys=${Object.keys(d).join(",")} Status=${d.Status ?? d.status} BookingStatus=${d.BookingStatus ?? d.bookingStatus} DriverName=${d.DriverName ?? d.driverName ?? d.drivername} DriverId=${d.DriverId ?? d.driverId ?? d.driverid}`);
 
-      const rawStatus = String(d.Status ?? d.status ?? d.BookingStatus ?? d.bookingStatus ?? "").trim();
+      // Prefer the more advanced of Status vs BookingStatus (Status alone can lag
+      // as Waiting/Pending while BookingStatus is already Assigned).
+      const statusCandidates = [
+        d.Status, d.status, d.BookingStatus, d.bookingStatus,
+      ].filter((v) => v != null && String(v).trim() !== "");
+      const statusRank = (raw: unknown): number => {
+        const s = String(raw || "").toLowerCase().replace(/[\s_-]/g, "");
+        if (!s) return -1;
+        if (s.includes("cancel") || s.includes("noshow") || s === "completed" || s === "done") return 100;
+        if (s === "active" || s === "onboard" || s === "busy" || s === "ontrip") return 80;
+        if (s === "arrived" || s === "arrivedatpickup") return 70;
+        if (s === "picking" || s === "enroute" || s === "onway") return 60;
+        if (s === "assigned" || s === "accepted") return 50;
+        if (s === "offered" || s === "dispatched") return 40;
+        if (s === "queued") return 30;
+        if (s === "waiting" || s === "pending") return 20;
+        return 0;
+      };
+      let rawStatus = String(statusCandidates[0] ?? "").trim();
+      let bestR = statusRank(rawStatus);
+      for (let i = 1; i < statusCandidates.length; i++) {
+        const r = statusRank(statusCandidates[i]);
+        if (r > bestR) {
+          rawStatus = String(statusCandidates[i]).trim();
+          bestR = r;
+        }
+      }
       const rawStatusLower = rawStatus.toLowerCase();
 
       // Precise gap fix: TRACE used to claim "apply" while every setActiveRide below
@@ -1492,7 +1580,6 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       const driverIdOnly = String(
         d.DriverId ?? d.driverId ?? d.driverid ?? ""
       ).trim();
-      const driverName = driverDisplayName || driverIdOnly;
       const vehicleLabel = String(
         d.VehicleId ?? d.vehicleId ?? d.vehicleid ??
         d.VehicleNo ?? d.vehicleNo ?? d.vehicleno ??
@@ -1504,10 +1591,13 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
         d.Rego ?? d.rego ?? "—"
       ).trim() || "—";
 
-      // Confirm on DriverName OR a real DriverId (allbookings sometimes omits name).
+      // Confirm on a real display name OR a real DriverId (not sentinel 0/-1).
+      // Do NOT treat driverId "0" as a name via `displayName || id` — that falsely
+      // confirmed empty offers and hid the real Assigned-without-name freeze.
       const hasDriverIdentity =
-        !!driverName ||
+        !!driverDisplayName ||
         (!!driverIdOnly && driverIdOnly !== "0" && driverIdOnly !== "-1");
+      const driverName = driverDisplayName || (hasDriverIdentity ? driverIdOnly : "");
       if (hasDriverIdentity) {
         // Start live GPS listener: online/{cid}/{vehicleId}/current → {lat, lng}
         const rawVehicleId = String(
@@ -1635,7 +1725,10 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       }
 
       if (rawStatus && !ignoreForStatus.has(rawStatusLower)) {
-        const mapped = RTDB_STATUS_MAP[rawStatus];
+        const mapped =
+          RTDB_STATUS_MAP[rawStatus] ||
+          RTDB_STATUS_MAP[rawStatusLower] ||
+          RTDB_STATUS_MAP[rawStatusLower.replace(/\s+/g, "")];
         if (mapped === "cancelled") {
           // Backend has confirmed cancellation. Prevent duplicate processing across
           // all 3 RTDB listeners by consuming pendingCancelRef atomically.
@@ -1741,6 +1834,13 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
     // dispatcher uses to push driver assignment and status updates to the passenger.
     rtdbRideStatusRef.current = rtdbRef(rtdb, `rideStatus/${companyId}/${firestoreId}`);
     rtdbOnValue(rtdbRideStatusRef.current, (snap) => handleRtdbUpdate(snap, "rideStatus"));
+
+    // Passengerjobs is mirrored on accept — listen so we still advance after pendingjobs DELETE.
+    const passengerUidLive = auth.currentUser?.uid;
+    if (passengerUidLive) {
+      const paxRef = rtdbRef(rtdb, `Passengerjobs/${passengerUidLive}/${firestoreId}`);
+      rtdbOnValue(paxRef, (snap) => handleRtdbUpdate(snap, "Passengerjobs"));
+    }
 
     // Register for push notifications in the background — does NOT block booking flow
     registerForPushNotificationsAsync().then((deviceUid) => {
@@ -2729,29 +2829,75 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       completed: ["Trip complete!", "Please rate your driver", "success"],
     };
 
-    const onSnap = (snap: { exists(): boolean; val(): unknown }) => {
-      if (!snap.exists()) return;
+    const onSnap = (snap: { exists(): boolean; val(): unknown }, source = "reattach") => {
+      if (!snap.exists()) {
+        if (source === "pendingjobs" && activeRideRef.current?.status === "searching") {
+          void (async () => {
+            try {
+              const [abSnap, paxSnap] = await Promise.all([
+                rtdbGet(rtdbRef(rtdb, `allbookings/${companyId}/${firestoreId}`)),
+                auth.currentUser?.uid
+                  ? rtdbGet(rtdbRef(rtdb, `Passengerjobs/${auth.currentUser.uid}/${firestoreId}`))
+                  : Promise.resolve(null),
+              ]);
+              const ab = abSnap && abSnap.exists() ? (abSnap.val() as Record<string, unknown>) : null;
+              const pax = paxSnap && paxSnap.exists() ? (paxSnap.val() as Record<string, unknown>) : null;
+              const merged = { ...(pax || {}), ...(ab || {}) };
+              if (Object.keys(merged).length) {
+                onSnap({ exists: () => true, val: () => merged }, "after-pending-delete");
+              }
+            } catch (e) {
+              console.warn("[Dispatch] reattach pending delete refresh failed:", e);
+            }
+          })();
+        }
+        return;
+      }
       const d = snap.val() as Record<string, unknown>;
-      const rawStatus = String(d.Status ?? d.status ?? d.BookingStatus ?? d.bookingStatus ?? "").trim();
+      const statusCandidates = [
+        d.Status, d.status, d.BookingStatus, d.bookingStatus,
+      ].filter((v) => v != null && String(v).trim() !== "");
+      const statusRank = (raw: unknown): number => {
+        const s = String(raw || "").toLowerCase().replace(/[\s_-]/g, "");
+        if (!s) return -1;
+        if (s.includes("cancel") || s.includes("noshow") || s === "completed" || s === "done") return 100;
+        if (s === "active" || s === "onboard" || s === "busy" || s === "ontrip") return 80;
+        if (s === "arrived" || s === "arrivedatpickup") return 70;
+        if (s === "picking" || s === "enroute" || s === "onway") return 60;
+        if (s === "assigned" || s === "accepted") return 50;
+        if (s === "offered" || s === "dispatched") return 40;
+        if (s === "queued") return 30;
+        if (s === "waiting" || s === "pending") return 20;
+        return 0;
+      };
+      let rawStatus = String(statusCandidates[0] ?? "").trim();
+      let bestR = statusRank(rawStatus);
+      for (let i = 1; i < statusCandidates.length; i++) {
+        const r = statusRank(statusCandidates[i]);
+        if (r > bestR) {
+          rawStatus = String(statusCandidates[i]).trim();
+          bestR = r;
+        }
+      }
       const rawStatusLower = rawStatus.toLowerCase().replace(/\s+/g, "");
       if (!activeRideRef.current) {
-        const created = materializeActiveRideFromLiveSnap(companyId, firestoreId, d, "reattach");
+        const created = materializeActiveRideFromLiveSnap(companyId, firestoreId, d, source);
         if (!created) {
           patchDiag({
-            phase: "live:reattach",
+            phase: `live:${source}`,
             listenersKey: key,
-            lastLiveRtdbStatus: `reattach=${rawStatus || "(empty)"} drv=${driverOf(d)}`,
-            decision: `live reattach Status=${rawStatus || "(empty)"} — activeRide null and create skipped`,
+            lastLiveRtdbStatus: `${source}=${rawStatus || "(empty)"} drv=${driverOf(d)}`,
+            decision: `live ${source} Status=${rawStatus || "(empty)"} — activeRide null and create skipped`,
             activeRideJobId: "—",
             activeRideStatus: "—",
           });
         }
       } else {
         patchDiag({
-          phase: "live:reattach",
+          phase: `live:${source}`,
           listenersKey: key,
-          lastLiveRtdbStatus: `reattach=${rawStatus || "(empty)"} drv=${driverOf(d)}`,
-          decision: `live reattach Status=${rawStatus || "(empty)"} → patching Active Ride ${activeRideRef.current.firestoreId}`,
+          lastLiveRtdbStatus: `${source}=${rawStatus || "(empty)"} drv=${driverOf(d)}`,
+          decision: `live ${source} Status=${rawStatus || "(empty)"} → patching Active Ride ${activeRideRef.current.firestoreId}`,
           activeRideJobId: String(activeRideRef.current.firestoreId || "—"),
           activeRideStatus: String(activeRideRef.current.status || "—"),
         });
@@ -2853,11 +2999,18 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
 
     const pendingRef = rtdbRef(rtdb, `pendingjobs/${companyId}/${firestoreId}`);
     rtdbJobRef.current = pendingRef;
-    rtdbOnValue(pendingRef, onSnap);
+    rtdbOnValue(pendingRef, (snap) => onSnap(snap, "pendingjobs"));
     rtdbAllbookingsRef.current = rtdbRef(rtdb, `allbookings/${companyId}/${firestoreId}`);
-    rtdbOnValue(rtdbAllbookingsRef.current, onSnap);
+    rtdbOnValue(rtdbAllbookingsRef.current, (snap) => onSnap(snap, "allbookings"));
     rtdbRideStatusRef.current = rtdbRef(rtdb, `rideStatus/${companyId}/${firestoreId}`);
-    rtdbOnValue(rtdbRideStatusRef.current, onSnap);
+    rtdbOnValue(rtdbRideStatusRef.current, (snap) => onSnap(snap, "rideStatus"));
+    const paxUid = auth.currentUser?.uid;
+    if (paxUid) {
+      rtdbOnValue(
+        rtdbRef(rtdb, `Passengerjobs/${paxUid}/${firestoreId}`),
+        (snap) => onSnap(snap, "Passengerjobs"),
+      );
+    }
     listenToRideStatus(companyId, firestoreId, pickup, destination);
 
     return () => {

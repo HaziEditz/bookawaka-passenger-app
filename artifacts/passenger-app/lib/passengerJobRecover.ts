@@ -131,17 +131,39 @@ export function pickAuthoritativeStatus(
   allbookings?: Record<string, unknown> | null,
   passengerJob?: Record<string, unknown> | null,
 ): unknown {
-  const from = (n?: Record<string, unknown> | null) =>
-    n ? n.Status ?? n.status ?? n.BookingStatus ?? n.bookingStatus : undefined;
-  // Live dispatch inbox wins while the job is still offerable / on-trip.
-  const pendSt = from(pendingjobs);
-  if (pendSt != null && String(pendSt).trim() !== "" && !isTerminalJobStatus(pendSt)) {
-    return pendSt;
+  const rank = (raw: unknown): number => {
+    const s = String(raw || "").toLowerCase().replace(/[\s_-]/g, "");
+    if (!s) return -1;
+    if (s.includes("cancel") || s.includes("noshow") || s === "completed" || s === "done") return 100;
+    if (s === "active" || s === "onboard" || s === "busy" || s === "ontrip") return 80;
+    if (s === "arrived" || s === "arrivedatpickup") return 70;
+    if (s === "picking" || s === "enroute" || s === "onway") return 60;
+    if (s === "assigned" || s === "accepted") return 50;
+    if (s === "offered" || s === "dispatched") return 40;
+    if (s === "queued") return 30;
+    if (s === "waiting" || s === "pending") return 20;
+    if (s === "scheduled" || s === "pendingpayment") return 10;
+    return 0;
+  };
+  const candidates: unknown[] = [];
+  for (const n of [pendingjobs, allbookings, passengerJob]) {
+    if (!n || typeof n !== "object") continue;
+    for (const k of ["Status", "status", "BookingStatus", "bookingStatus"] as const) {
+      const v = (n as Record<string, unknown>)[k];
+      if (v != null && String(v).trim() !== "") candidates.push(v);
+    }
   }
-  const abSt = from(allbookings);
-  if (abSt != null && String(abSt).trim() !== "") return abSt;
-  if (pendSt != null && String(pendSt).trim() !== "") return pendSt;
-  return from(passengerJob);
+  if (!candidates.length) return undefined;
+  let best = candidates[0];
+  let bestRank = rank(best);
+  for (let i = 1; i < candidates.length; i++) {
+    const r = rank(candidates[i]);
+    if (r > bestRank) {
+      best = candidates[i];
+      bestRank = r;
+    }
+  }
+  return best;
 }
 
 /** Merge Passengerjobs stub with pendingjobs + allbookings. */
