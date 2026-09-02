@@ -202,7 +202,7 @@ export default function ProfileScreen() {
             <Text style={[styles.createBtnText, { color: colors.foreground }]}>Create an Account</Text>
           </Pressable>
           <Text style={[styles.guestDisclaimer, { color: colors.mutedForeground }]}>
-            You can still browse the app as a guest
+            Sign in is required to book rides and manage your account
           </Text>
           <AppBuildLabel style={{ marginTop: 12, marginBottom: 4 }} />
         </ScrollView>

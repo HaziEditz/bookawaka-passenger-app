@@ -1,5 +1,4 @@
 import { Feather } from "@expo/vector-icons";
-import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
 import React, { useState } from "react";
 import {
@@ -16,46 +15,34 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAuth } from "@/context/AuthContext";
 import { useColors } from "@/hooks/useColors";
 
-export default function LoginScreen() {
+export default function ForgotPasswordScreen() {
   const colors = useColors();
-  const { login } = useAuth();
+  const { resetPassword } = useAuth();
   const insets = useSafeAreaInsets();
   const [identifier, setIdentifier] = useState("");
-  const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
-  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
+  const [sentTo, setSentTo] = useState("");
 
-  const handleLogin = async () => {
+  const handleReset = async () => {
     setError("");
-    if (!identifier.trim() || !password.trim()) {
-      setError("Please enter your email or phone number, and password.");
+    setSentTo("");
+    if (!identifier.trim()) {
+      setError("Enter the email or phone number for your account.");
       return;
     }
     setLoading(true);
     try {
-      await login(identifier.trim(), password);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      router.replace("/(tabs)");
+      const email = await resetPassword(identifier.trim());
+      setSentTo(email);
     } catch (e: any) {
-      console.error("Login error:", e);
       const code = e?.code ?? "";
-      if (
-        code === "auth/user-not-found" ||
-        code === "auth/invalid-credential" ||
-        code === "auth/wrong-password"
-      ) {
-        setError("Incorrect email/phone or password. Please try again.");
+      if (code === "auth/user-not-found" || code === "auth/invalid-credential") {
+        setError("No account found with that email or phone. Please register first.");
       } else if (code === "auth/invalid-email") {
         setError(e.message ?? "Please enter a valid email or phone number.");
-      } else if (code === "auth/too-many-requests") {
-        setError("Too many failed attempts. Please wait a moment and try again.");
-      } else if (code === "auth/network-request-failed") {
-        setError("Network error. Please check your connection and try again.");
-      } else if (code === "auth/user-disabled") {
-        setError("This account has been disabled. Please contact support.");
       } else {
-        setError((e.message ?? "Login failed. Please try again.") + (code ? ` [${code}]` : ""));
+        setError(e.message ?? "Could not send reset email. Try again.");
       }
     } finally {
       setLoading(false);
@@ -71,16 +58,18 @@ export default function LoginScreen() {
         <ScrollView
           contentContainerStyle={[
             styles.content,
-            { paddingTop: insets.top + 40, paddingBottom: insets.bottom + 24 },
+            { paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24 },
           ]}
           keyboardShouldPersistTaps="handled"
         >
-          <View style={[styles.logoBox, { backgroundColor: colors.primary }]}>
-            <Feather name="navigation" size={32} color="#fff" />
-          </View>
-          <Text style={[styles.title, { color: colors.foreground }]}>Welcome back</Text>
+          <Pressable onPress={() => router.back()} style={styles.back}>
+            <Feather name="arrow-left" size={22} color={colors.foreground} />
+          </Pressable>
+
+          <Text style={[styles.title, { color: colors.foreground }]}>Forgot password</Text>
           <Text style={[styles.subtitle, { color: colors.mutedForeground }]}>
-            Sign in with email or phone number
+            Enter your email or phone number and we will send a reset link to the email on your
+            account.
           </Text>
 
           <View style={styles.form}>
@@ -94,33 +83,11 @@ export default function LoginScreen() {
                 onChangeText={(t) => {
                   setIdentifier(t);
                   setError("");
+                  setSentTo("");
                 }}
                 autoCapitalize="none"
                 keyboardType="email-address"
-                autoComplete="username"
               />
-            </View>
-            <View style={[styles.inputBox, { borderColor: colors.border, backgroundColor: colors.card }]}>
-              <Feather name="lock" size={18} color={colors.mutedForeground} />
-              <TextInput
-                style={[styles.input, { color: colors.foreground }]}
-                placeholder="Password"
-                placeholderTextColor={colors.mutedForeground}
-                value={password}
-                onChangeText={(t) => {
-                  setPassword(t);
-                  setError("");
-                }}
-                secureTextEntry={!showPassword}
-                autoComplete="password"
-              />
-              <Pressable onPress={() => setShowPassword((v) => !v)}>
-                <Feather
-                  name={showPassword ? "eye-off" : "eye"}
-                  size={18}
-                  color={colors.mutedForeground}
-                />
-              </Pressable>
             </View>
 
             {error ? (
@@ -135,28 +102,33 @@ export default function LoginScreen() {
               </View>
             ) : null}
 
+            {sentTo ? (
+              <View
+                style={[
+                  styles.errorBox,
+                  { backgroundColor: colors.success + "18", borderColor: colors.success },
+                ]}
+              >
+                <Feather name="check-circle" size={15} color={colors.success} />
+                <Text style={[styles.errorText, { color: colors.success }]}>
+                  Password reset email sent to {sentTo}. Check your inbox and spam folder.
+                </Text>
+              </View>
+            ) : null}
+
             <Pressable
-              onPress={handleLogin}
+              onPress={handleReset}
               disabled={loading}
               style={({ pressed }) => [
                 styles.btn,
                 { backgroundColor: colors.primary, opacity: pressed || loading ? 0.7 : 1 },
               ]}
             >
-              <Text style={styles.btnText}>{loading ? "Signing in..." : "Sign In"}</Text>
+              <Text style={styles.btnText}>{loading ? "Sending..." : "Send reset link"}</Text>
             </Pressable>
 
-            <Pressable onPress={() => router.push("/auth/forgot-password")} style={styles.linkRow}>
-              <Text style={[styles.linkText, { color: colors.primary }]}>Forgot password?</Text>
-            </Pressable>
-
-            <Pressable onPress={() => router.push("/auth/register")} style={styles.linkRow}>
-              <Text style={[styles.linkText, { color: colors.mutedForeground }]}>
-                Don't have an account?{" "}
-                <Text style={{ color: colors.primary, fontFamily: "Inter_600SemiBold" }}>
-                  Create Account
-                </Text>
-              </Text>
+            <Pressable onPress={() => router.replace("/auth/login")} style={styles.linkRow}>
+              <Text style={[styles.linkText, { color: colors.primary }]}>Back to Sign In</Text>
             </Pressable>
           </View>
         </ScrollView>
@@ -168,17 +140,10 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   container: { flex: 1 },
-  content: { flexGrow: 1, paddingHorizontal: 24, alignItems: "center" },
-  logoBox: {
-    width: 72,
-    height: 72,
-    borderRadius: 20,
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 24,
-  },
+  content: { flexGrow: 1, paddingHorizontal: 24 },
+  back: { marginBottom: 20, alignSelf: "flex-start" },
   title: { fontSize: 28, fontFamily: "Inter_700Bold", marginBottom: 6 },
-  subtitle: { fontSize: 15, fontFamily: "Inter_400Regular", marginBottom: 36 },
+  subtitle: { fontSize: 15, fontFamily: "Inter_400Regular", marginBottom: 28, lineHeight: 22 },
   form: { width: "100%", gap: 14 },
   inputBox: {
     flexDirection: "row",

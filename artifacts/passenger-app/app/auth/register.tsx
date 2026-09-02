@@ -29,8 +29,12 @@ export default function RegisterScreen() {
 
   const handleRegister = async () => {
     setError("");
-    if (!name.trim() || !email.trim() || !phone.trim() || !password.trim()) {
-      setError("Please fill in all fields.");
+    if (!name.trim() || !phone.trim() || !password.trim()) {
+      setError("Please fill in name, phone, and password. Email is optional if you use phone.");
+      return;
+    }
+    if (!email.trim() && !phone.trim()) {
+      setError("Email or phone number is required.");
       return;
     }
     if (password.length < 6) {
@@ -41,7 +45,7 @@ export default function RegisterScreen() {
     try {
       await register(name.trim(), email.trim(), phone.trim(), password);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      router.replace("/");
+      router.replace("/(tabs)");
     } catch (e: any) {
       console.error("Register error:", e);
       const code: string = e?.code ?? e?.errorInfo?.code ?? "";
@@ -79,7 +83,7 @@ export default function RegisterScreen() {
     capitalize?: "none" | "words";
   }[] = [
     { placeholder: "Full name", icon: "user", value: name, onChange: setName, keyboard: "default", capitalize: "words" },
-    { placeholder: "Email", icon: "mail", value: email, onChange: setEmail, keyboard: "email-address", capitalize: "none" },
+    { placeholder: "Email (optional if using phone)", icon: "mail", value: email, onChange: setEmail, keyboard: "email-address", capitalize: "none" },
     { placeholder: "Phone number", icon: "phone", value: phone, onChange: setPhone, keyboard: "phone-pad", capitalize: "none" },
     { placeholder: "Password", icon: "lock", value: password, onChange: setPassword, keyboard: "default", secure: true, capitalize: "none" },
   ];

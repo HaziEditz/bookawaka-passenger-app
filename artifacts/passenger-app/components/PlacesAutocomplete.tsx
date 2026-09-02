@@ -52,6 +52,13 @@ export function PlacesAutocomplete({
 
   useEffect(() => {
     setText(value);
+    if (value && value.length > 24) {
+      requestAnimationFrame(() => {
+        inputRef.current?.setNativeProps?.({
+          selection: { start: 0, end: 0 },
+        });
+      });
+    }
   }, [value]);
 
   const handleChange = (input: string) => {
@@ -99,6 +106,18 @@ export function PlacesAutocomplete({
 
     setText(detail.address);
     onSelect(detail);
+    // Keep caret at the start so street number stays visible (RN TextInput
+    // otherwise scrolls to the end and looks like "suburb only").
+    requestAnimationFrame(() => {
+      inputRef.current?.setNativeProps?.({
+        selection: { start: 0, end: 0 },
+      });
+    });
+    setTimeout(() => {
+      inputRef.current?.setNativeProps?.({
+        selection: { start: 0, end: 0 },
+      });
+    }, 50);
   };
 
   const accentColor = iconColor ?? colors.primary;

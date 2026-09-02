@@ -13,9 +13,23 @@ Notifications.setNotificationHandler({
   }),
 });
 
+async function ensureAndroidChannel() {
+  if (Platform.OS !== "android") return;
+  await Notifications.setNotificationChannelAsync("ride-updates", {
+    name: "Ride updates",
+    importance: Notifications.AndroidImportance.MAX,
+    vibrationPattern: [0, 250, 250, 250],
+    sound: "default",
+    enableVibrate: true,
+    showBadge: true,
+  });
+}
+
 export async function registerForPushNotificationsAsync(): Promise<string | null> {
   if (Platform.OS === "web") return null;
   if (!Device.isDevice) return null;
+
+  await ensureAndroidChannel();
 
   const { status: existingStatus } = await Notifications.getPermissionsAsync();
   let finalStatus = existingStatus;
@@ -43,13 +57,13 @@ export async function registerForPushNotificationsAsync(): Promise<string | null
 }
 
 export function addNotificationReceivedListener(
-  handler: (notification: Notifications.Notification) => void
+  handler: (notification: Notifications.Notification) => void,
 ): Notifications.Subscription {
   return Notifications.addNotificationReceivedListener(handler);
 }
 
 export function addNotificationResponseListener(
-  handler: (response: Notifications.NotificationResponse) => void
+  handler: (response: Notifications.NotificationResponse) => void,
 ): Notifications.Subscription {
   return Notifications.addNotificationResponseReceivedListener(handler);
 }

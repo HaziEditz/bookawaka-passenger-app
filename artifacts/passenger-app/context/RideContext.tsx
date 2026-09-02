@@ -1842,11 +1842,46 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       rtdbOnValue(paxRef, (snap) => handleRtdbUpdate(snap, "Passengerjobs"));
     }
 
-    // Register for push notifications in the background — does NOT block booking flow
-    registerForPushNotificationsAsync().then((deviceUid) => {
-      if (!deviceUid) return;
-      updateDoc(doc(db, "allbookings", companyId, "rides", firestoreId), { deviceUid }).catch(() => {});
-    }).catch(() => {});
+    // Register for push — stamp Expo token on RTDB booking so INVT can push
+    // when the app is backgrounded/closed (Firestore-only was never read by dispatch).
+    registerForPushNotificationsAsync()
+      .then(async (deviceUid) => {
+        if (!deviceUid) return;
+        const uid = passengerUidLive || auth.currentUser?.uid;
+        if (uid) {
+          try {
+            await rtdbUpdate(rtdbRef(rtdb, `users/${uid}`), {
+              expoPushToken: deviceUid,
+              deviceUid,
+              pushUpdatedAt: Date.now(),
+            });
+          } catch {
+            /* best-effort */
+          }
+        }
+        const patch = { deviceUid, DeviceUid: deviceUid, expoPushToken: deviceUid };
+        try {
+          await rtdbUpdate(rtdbRef(rtdb, `allbookings/${companyId}/${firestoreId}`), patch);
+        } catch {
+          /* best-effort */
+        }
+        try {
+          await rtdbUpdate(rtdbRef(rtdb, `pendingjobs/${companyId}/${firestoreId}`), patch);
+        } catch {
+          /* pending may already be deleted after assign */
+        }
+        if (uid) {
+          try {
+            await rtdbUpdate(rtdbRef(rtdb, `Passengerjobs/${uid}/${firestoreId}`), patch);
+          } catch {
+            /* best-effort */
+          }
+        }
+        updateDoc(doc(db, "allbookings", companyId, "rides", firestoreId), { deviceUid }).catch(
+          () => {},
+        );
+      })
+      .catch(() => {});
 
     listenToRideStatus(companyId, firestoreId, params.pickup.location, params.destination.location);
 

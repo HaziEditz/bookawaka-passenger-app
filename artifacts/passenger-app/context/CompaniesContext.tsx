@@ -143,7 +143,7 @@ export function CompaniesProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     // We need data from 4 nodes: companies, online, vehicles, tariffs
-    // Only subscribe after Firebase auth is ready (anonymous or real user).
+    // Only subscribe after a real Firebase auth session is ready.
     // onValue returns permission_denied if called before auth token exists.
     let companyData: Record<string, RtdbCompany> = {};
     let onlineData: Record<string, RtdbDriver> = {};
@@ -318,16 +318,10 @@ export function CompaniesProvider({ children }: { children: React.ReactNode }) {
         if (vt) {
           onlineVehiclesByCompany.get(companyId)!.add(vt);
         } else {
-          // Can't determine this vehicle's specific type from the driver record.
-          // Pick the HIGHEST-CAPACITY type the company has registered rather than
-          // adding all types — if a company has a Van, the unknown driver is likely
-          // that Van, not a Sedan.
-          const CAPACITY_PRIORITY: VehicleType[] = ["Van", "SUV", "Luxury", "Electric", "Wheelchair", "Sedan"];
-          const companyTypes = companyVehicleTypes.get(companyId);
-          const best = companyTypes && companyTypes.size > 0
-            ? (CAPACITY_PRIORITY.find((t) => companyTypes.has(t)) ?? "Sedan")
-            : "Sedan";
-          onlineVehiclesByCompany.get(companyId)!.add(best);
+          // Unknown online unit — track Sedan availability only for matching hints.
+          // Do NOT invent Van here; that previously forced Van pricing when Van was
+          // the only (mis-classified) online vehicle.
+          onlineVehiclesByCompany.get(companyId)!.add("Sedan");
         }
       }
 
@@ -398,23 +392,24 @@ export function CompaniesProvider({ children }: { children: React.ReactNode }) {
           name = onlineDriverNameByCompany.get(id) ?? `Taxi Co. ${id}`;
         }
 
-        // Resolve vehicle types: from online if available, else from vehicles collection,
-        // else from profile, else default Sedan
-        const vehicleTypes: VehicleType[] = hasAvailableDrivers
-          ? Array.from(liveVehicles!)
-          : (() => {
-              // First try the vehicles collection (most accurate)
-              const fromVehicles = companyVehicleTypes.get(id);
-              if (fromVehicles && fromVehicles.size > 0) return Array.from(fromVehicles);
-              // Then try profile array fields
-              const profileVehicles = data.vehicleTypes ?? data.vehicles ?? data.vehicleClasses;
-              if (Array.isArray(profileVehicles) && profileVehicles.length > 0) {
-                return (profileVehicles as string[]).map((v) =>
-                  classToVehicleType(String(v), 4, 0, "", "")
-                );
-              }
-              return ["Sedan" as VehicleType];
-            })();
+        // Pricing catalog = fleet registry / profile (passenger need), NOT whatever
+        // happens to be online. Online inventory only sets driversAvailable for matching.
+        // Unknown online drivers used to bias toward Van and force Van pricing (#pricing).
+        const catalogTypes: VehicleType[] = (() => {
+          const fromVehicles = companyVehicleTypes.get(id);
+          if (fromVehicles && fromVehicles.size > 0) return Array.from(fromVehicles);
+          const profileVehicles = data.vehicleTypes ?? data.vehicles ?? data.vehicleClasses;
+          if (Array.isArray(profileVehicles) && profileVehicles.length > 0) {
+            return (profileVehicles as string[]).map((v) =>
+              classToVehicleType(String(v), 4, 0, "", ""),
+            );
+          }
+          // Prefer Sedan for normal trips when catalog is empty — never invent Van-only.
+          return ["Sedan" as VehicleType];
+        })();
+        const vehicleTypes: VehicleType[] = catalogTypes.length
+          ? catalogTypes
+          : ["Sedan" as VehicleType];
 
         // Tariffs — check dedicated RTDB tariffs node first (most accurate).
         // Supported structures:
@@ -665,18 +660,19 @@ export function CompaniesProvider({ children }: { children: React.ReactNode }) {
       }
     })();
 
-    // Only subscribe once Firebase auth is ready (anonymous or real user).
+    // Only subscribe once a real Firebase auth session is ready.
     // Without an auth token onValue immediately errors with permission_denied.
     let prevUid: string | null = undefined as unknown as string | null;
     const unsubAuth = onAuthStateChanged(auth, (user) => {
       const uid = user?.uid ?? null;
-      // Re-subscribe when user changes (sign-in, sign-out, anonymous→real)
+      // Re-subscribe when user changes (sign-in / sign-out)
       if (uid !== prevUid) {
         prevUid = uid;
         if (uid) {
           subscribeToRtdb();
         } else {
-          // No auth yet — wait for anonymous sign-in (triggered by AuthContext)
+          // No auth yet — AuthSessionGate will send the user to Sign In.
+          // Do not silently create anonymous guests.
           rtdbUnsubs.forEach((u) => u());
           rtdbUnsubs = [];
         }

@@ -45,6 +45,17 @@ import {
   formatTZScheduledLabel,
 } from "@/lib/timezone";
 
+/** Prefer passenger need over fleet order — never default to Van just because it is listed first. */
+function pickNeedBasedVehicle(available: VehicleType[], paxNeeded: number): VehicleType {
+  const list = available.length ? available : (["Sedan"] as VehicleType[]);
+  const need = Math.max(1, paxNeeded || 1);
+  const preference: VehicleType[] = ["Sedan", "Electric", "Luxury", "SUV", "Van", "Wheelchair"];
+  const fits = preference.filter((t) => list.includes(t) && VEHICLE_CAPACITY[t] >= need);
+  if (fits.length) return fits[0];
+  const anyFit = list.find((t) => VEHICLE_CAPACITY[t] >= need);
+  return anyFit ?? list[0] ?? "Sedan";
+}
+
 type Step = "location" | "vehicle" | "confirm";
 
 export default function BookingScreen() {
@@ -63,8 +74,8 @@ export default function BookingScreen() {
   const [stops, setStops] = useState<Stop[]>([]);
   const [addingStop, setAddingStop] = useState(false);
   const [company, setCompany] = useState<Company>(companies[0]);
-  const [vehicleType, setVehicleType] = useState<VehicleType>(
-    companies[0]?.vehicles?.[0] ?? "Sedan"
+  const [vehicleType, setVehicleType] = useState<VehicleType>(() =>
+    pickNeedBasedVehicle(companies[0]?.vehicles ?? ["Sedan"], 1),
   );
   const [route, setRoute] = useState<RouteResult | null>(null);
   const [loadingRoute, setLoadingRoute] = useState(false);
@@ -235,22 +246,29 @@ export default function BookingScreen() {
           ) ??
           companies.find((c) => c.id !== "any" && !isLoadTestCompanyId(c.id)) ??
           companies[0];
-        // If company is actually changing, reset vehicleType to first available
+        // If company is actually changing, reset vehicleType to need-based default
         if (next.id !== prev.id && next.vehicles.length > 0) {
-          setVehicleType(next.vehicles[0]);
+          setVehicleType(pickNeedBasedVehicle(next.vehicles, rideshare ? passengerCount : 1));
         }
         return next;
       });
     }
   }, [companies, companiesLoading]);
 
-  // Whenever company changes explicitly (user tap), reset vehicleType to first available
+  // Whenever company changes explicitly (user tap), reset vehicleType if current type unavailable
   useEffect(() => {
     if (company.vehicles.length > 0 && !company.vehicles.includes(vehicleType)) {
-      setVehicleType(company.vehicles[0]);
+      setVehicleType(pickNeedBasedVehicle(company.vehicles, rideshare ? passengerCount : 1));
     }
   }, [company.id]);
 
+  // Rideshare pax count can force a larger class — bump tariff type when needed.
+  useEffect(() => {
+    if (!rideshare) return;
+    if (VEHICLE_CAPACITY[vehicleType] < passengerCount) {
+      setVehicleType(pickNeedBasedVehicle(company.vehicles, passengerCount));
+    }
+  }, [rideshare, passengerCount, company.id]);
   // TM state
   const [isTM, setIsTM] = useState(false);
 
@@ -720,9 +738,11 @@ export default function BookingScreen() {
   };
 
   const handleBook = async () => {
-    // Allow anonymous Firebase users (guest) to book — firebaseUser has a UID for RTDB writes.
-    // Only block if there is no Firebase auth token at all.
-    if (!firebaseUser) { router.push("/auth/login"); return; }
+    // Real account required — no anonymous / guest booking.
+    if (!firebaseUser || firebaseUser.isAnonymous || !user) {
+      router.push("/auth/login");
+      return;
+    }
     if (!pickup || !destination || !route) return;
 
     // Enforce scheduled time validity — must be at least 30 minutes from now
