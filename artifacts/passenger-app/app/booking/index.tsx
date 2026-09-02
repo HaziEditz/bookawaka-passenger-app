@@ -90,7 +90,7 @@ export default function BookingScreen() {
   const [stripeError, setStripeError] = useState<string | null>(null);
   const [useWalletCredit, setUseWalletCredit] = useState(false);
   const [rideshare, setRideshare] = useState(false);
-  const [passengerCount, setPassengerCount] = useState(2);
+  const [passengerCount, setPassengerCount] = useState(1);
   const [pickupNote, setPickupNote] = useState("");
   const [locating, setLocating] = useState(false);
   const [locationError, setLocationError] = useState<string | null>(null);
@@ -248,7 +248,7 @@ export default function BookingScreen() {
           companies[0];
         // If company is actually changing, reset vehicleType to need-based default
         if (next.id !== prev.id && next.vehicles.length > 0) {
-          setVehicleType(pickNeedBasedVehicle(next.vehicles, rideshare ? passengerCount : 1));
+          setVehicleType(pickNeedBasedVehicle(next.vehicles, passengerCount));
         }
         return next;
       });
@@ -258,17 +258,17 @@ export default function BookingScreen() {
   // Whenever company changes explicitly (user tap), reset vehicleType if current type unavailable
   useEffect(() => {
     if (company.vehicles.length > 0 && !company.vehicles.includes(vehicleType)) {
-      setVehicleType(pickNeedBasedVehicle(company.vehicles, rideshare ? passengerCount : 1));
+      setVehicleType(pickNeedBasedVehicle(company.vehicles, passengerCount));
     }
   }, [company.id]);
 
-  // Rideshare pax count can force a larger class — bump tariff type when needed.
+  // Pax count can force a larger class — bump tariff type when needed.
   useEffect(() => {
-    if (!rideshare) return;
+    if (!company?.vehicles?.length) return;
     if (VEHICLE_CAPACITY[vehicleType] < passengerCount) {
       setVehicleType(pickNeedBasedVehicle(company.vehicles, passengerCount));
     }
-  }, [rideshare, passengerCount, company.id]);
+  }, [passengerCount, company.id]);
   // TM state
   const [isTM, setIsTM] = useState(false);
 
@@ -824,7 +824,7 @@ export default function BookingScreen() {
           promoCode: discount > 0 ? promo : undefined,
           discount: discount > 0 ? discount : undefined,
           rideshare,
-          passengerCount: rideshare ? passengerCount : 1,
+          passengerCount,
           isTM,
           tmPassengers: isTM ? tmPassengers : undefined,
           // tmCouncilAmount = fare subsidy only (not hoist — hoist is in tmHoistFeeTotal)
@@ -947,13 +947,28 @@ export default function BookingScreen() {
         );
         router.replace("/(tabs)");
       } else {
-        router.replace({
-          pathname: "/active-ride",
-          params: {
-            booking: bookingId || "",
-            cid: effectiveCompany.id,
-          },
-        });
+        Alert.alert(
+          "Booking confirmed",
+          "We'll find you a driver. Trace the trip now, or go Home and come back from Active Ride anytime.",
+          [
+            {
+              text: "Home",
+              style: "cancel",
+              onPress: () => router.replace("/(tabs)"),
+            },
+            {
+              text: "Trace trip",
+              onPress: () =>
+                router.replace({
+                  pathname: "/active-ride",
+                  params: {
+                    booking: bookingId || "",
+                    cid: effectiveCompany.id,
+                  },
+                }),
+            },
+          ],
+        );
       }
     } catch (err: any) {
       if (err instanceof StripeCheckoutCancelledError || err?.name === "StripeCheckoutCancelledError") {
@@ -1409,6 +1424,42 @@ export default function BookingScreen() {
             )}
             {!asapBlocked && (
               <View>
+                {!isTM && (
+                  <>
+                    <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>PASSENGERS</Text>
+                    <View style={styles.passengerRowMain}>
+                      {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
+                        <Pressable
+                          key={n}
+                          onPress={() => {
+                            Haptics.selectionAsync();
+                            setPassengerCount(n);
+                            setVehicleType(pickNeedBasedVehicle(company.vehicles, n));
+                          }}
+                          style={[
+                            styles.passengerBtn,
+                            {
+                              backgroundColor: passengerCount === n ? colors.primary : colors.card,
+                              borderColor: passengerCount === n ? colors.primary : colors.border,
+                            },
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              styles.passengerBtnText,
+                              { color: passengerCount === n ? "#fff" : colors.foreground },
+                            ]}
+                          >
+                            {n}
+                          </Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                    <Text style={[styles.rideshareSub, { color: colors.mutedForeground, marginBottom: 12 }]}>
+                      Used for vehicle type and fare — not just ride sharing.
+                    </Text>
+                  </>
+                )}
                 <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>VEHICLE TYPE</Text>
                 <View style={styles.vehicleGrid}>
                   {company.vehicles.map((v) => {
@@ -1670,7 +1721,7 @@ export default function BookingScreen() {
                 </View>
                 {rideshare && (
                   <View style={styles.passengerRow}>
-                    <Text style={[styles.passengerLabel, { color: colors.mutedForeground }]}>Passengers sharing:</Text>
+                    <Text style={[styles.passengerLabel, { color: colors.mutedForeground }]}>Split between:</Text>
                     {[2, 3, 4].map((n) => (
                       <Pressable
                         key={n}
@@ -2203,6 +2254,7 @@ const styles = StyleSheet.create({
   rideshareSub: { fontSize: 12, fontFamily: "Inter_400Regular" },
   walletSplitBreakdown: { borderTopWidth: 1, paddingTop: 12, marginTop: 4, gap: 8 },
   passengerRow: { flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" },
+  passengerRowMain: { flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 },
   passengerLabel: { fontSize: 12, fontFamily: "Inter_400Regular" },
   passengerBtn: { width: 36, height: 36, borderRadius: 10, borderWidth: 1, alignItems: "center", justifyContent: "center" },
   passengerBtnText: { fontSize: 15, fontFamily: "Inter_700Bold" },

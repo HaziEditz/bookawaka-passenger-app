@@ -52,13 +52,6 @@ export function PlacesAutocomplete({
 
   useEffect(() => {
     setText(value);
-    if (value && value.length > 24) {
-      requestAnimationFrame(() => {
-        inputRef.current?.setNativeProps?.({
-          selection: { start: 0, end: 0 },
-        });
-      });
-    }
   }, [value]);
 
   const handleChange = (input: string) => {
@@ -106,22 +99,18 @@ export function PlacesAutocomplete({
 
     setText(detail.address);
     onSelect(detail);
-    // Keep caret at the start so street number stays visible (RN TextInput
-    // otherwise scrolls to the end and looks like "suburb only").
-    requestAnimationFrame(() => {
-      inputRef.current?.setNativeProps?.({
-        selection: { start: 0, end: 0 },
-      });
-    });
-    setTimeout(() => {
-      inputRef.current?.setNativeProps?.({
-        selection: { start: 0, end: 0 },
-      });
-    }, 50);
+  };
+
+  const beginEdit = () => {
+    setFocused(true);
+    requestAnimationFrame(() => inputRef.current?.focus());
   };
 
   const accentColor = iconColor ?? colors.primary;
   const showDropdown = focused && suggestions.length > 0;
+  // When blurred with a selected address, render Text Text so the START stays
+  // visible and the END truncates — RN TextInput scrolls to the caret/end.
+  const showSettledAddress = !focused && text.length > 0;
 
   return (
     <View style={styles.wrapper}>
@@ -132,29 +121,40 @@ export function PlacesAutocomplete({
         ]}
       >
         <Feather name={icon} size={16} color={accentColor} style={styles.leadingIcon} />
-        <TextInput
-          ref={inputRef}
-          style={[styles.input, { color: colors.foreground }]}
-          placeholder={placeholder}
-          placeholderTextColor={colors.mutedForeground}
-          value={text}
-          onChangeText={handleChange}
-          onFocus={() => setFocused(true)}
-          onBlur={() =>
-            setTimeout(() => {
-              setFocused(false);
-              setSuggestions([]);
-            }, 800)
-          }
-          autoFocus={autoFocus}
-          autoCorrect={false}
-          autoCapitalize="words"
-          returnKeyType="search"
-          numberOfLines={1}
-          multiline={false}
-          ellipsizeMode="tail"
-          {...(Platform.OS === "android" ? { includeFontPadding: false, textAlignVertical: "center" as const } : {})}
-        />
+        {showSettledAddress ? (
+          <Pressable onPress={beginEdit} style={styles.settledPress} accessibilityRole="button">
+            <Text
+              style={[styles.settledText, { color: colors.foreground }]}
+              numberOfLines={2}
+              ellipsizeMode="tail"
+            >
+              {text}
+            </Text>
+          </Pressable>
+        ) : (
+          <TextInput
+            ref={inputRef}
+            style={[styles.input, { color: colors.foreground }]}
+            placeholder={placeholder}
+            placeholderTextColor={colors.mutedForeground}
+            value={text}
+            onChangeText={handleChange}
+            onFocus={() => setFocused(true)}
+            onBlur={() =>
+              setTimeout(() => {
+                setFocused(false);
+                setSuggestions([]);
+              }, 800)
+            }
+            autoFocus={autoFocus}
+            autoCorrect={false}
+            autoCapitalize="words"
+            returnKeyType="search"
+            numberOfLines={1}
+            multiline={false}
+            {...(Platform.OS === "android" ? { includeFontPadding: false, textAlignVertical: "center" as const } : {})}
+          />
+        )}
         {loading && <ActivityIndicator size="small" color={accentColor} />}
         {text.length > 0 && !loading && (
           <Pressable
@@ -162,6 +162,8 @@ export function PlacesAutocomplete({
             onPress={() => {
               setText("");
               setSuggestions([]);
+              setFocused(true);
+              requestAnimationFrame(() => inputRef.current?.focus());
             }}
           >
             <Feather name="x" size={14} color={colors.mutedForeground} />
@@ -169,7 +171,6 @@ export function PlacesAutocomplete({
         )}
       </View>
 
-      {/* Inline (not absolute) so parent ScrollView can scroll suggestions above the keyboard */}
       {showDropdown && (
         <View
           style={[
@@ -246,8 +247,13 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_400Regular",
     padding: 0,
     margin: 0,
-    // Prevent long addresses from expanding the row off-screen
     ...(Platform.OS === "web" ? ({ overflow: "hidden", textOverflow: "ellipsis" } as object) : null),
+  },
+  settledPress: { flex: 1, minWidth: 0 },
+  settledText: {
+    fontSize: 14,
+    fontFamily: "Inter_400Regular",
+    lineHeight: 20,
   },
   dropdown: {
     borderWidth: 1,

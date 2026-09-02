@@ -60,15 +60,26 @@ async function resolveLoginEmail(identifier: string): Promise<string> {
   if (digits.startsWith("64") && digits.length > 2) candidates.push(digits.slice(2));
   else if (!digits.startsWith("64")) candidates.push(`64${digits}`);
 
+  let indexedUid = "";
   for (const c of candidates) {
     try {
       const snap = await get(ref(rtdb, `passengerIndex/phone/${c}`));
-      if (snap.exists()) {
-        const row = snap.val() as Record<string, unknown>;
-        const email = String(row.email ?? "").trim();
-        if (email) return email.toLowerCase();
-        // Legacy rows only stored key — try synthetic phone email
-      }
+      if (!snap.exists()) continue;
+      const row = snap.val() as Record<string, unknown>;
+      const email = String(row.email ?? "").trim();
+      if (email.includes("@")) return email.toLowerCase();
+      const uid = String(row.uid ?? row.key ?? "").trim();
+      if (uid && !indexedUid) indexedUid = uid;
+    } catch {
+      // continue
+    }
+  }
+
+  if (indexedUid) {
+    try {
+      const userSnap = await get(ref(rtdb, `users/${indexedUid}`));
+      const userEmail = String(userSnap.val()?.email ?? "").trim();
+      if (userEmail.includes("@")) return userEmail.toLowerCase();
     } catch {
       // continue
     }
@@ -123,9 +134,12 @@ async function writePhoneIndex(digits: string, uid: string, email: string) {
   else candidates.push(`0${digits}`);
   if (digits.startsWith("64") && digits.length > 2) candidates.push(digits.slice(2));
   else if (!digits.startsWith("64")) candidates.push(`64${digits}`);
+  // Prefer update so we never wipe richer fields if a partial row exists.
   await Promise.all(
     [...new Set(candidates)].map((c) =>
-      set(ref(rtdb, `passengerIndex/phone/${c}`), payload).catch(() => undefined),
+      update(ref(rtdb, `passengerIndex/phone/${c}`), payload).catch(() =>
+        set(ref(rtdb, `passengerIndex/phone/${c}`), payload).catch(() => undefined),
+      ),
     ),
   );
 }
@@ -257,6 +271,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           email: authEmail,
         }).catch(() => undefined);
       }
+      await update(ref(rtdb, `passengerIndex/key/${cred.user.uid}`), {
+        key: cred.user.uid,
+        uid: cred.user.uid,
+        email: authEmail,
+        createdAt: new Date().toISOString(),
+      }).catch(() => undefined);
     } catch (err: unknown) {
       console.warn("[Auth] RTDB profile write failed:", (err as Error)?.message);
       setUser({
