@@ -227,8 +227,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const register = async (name: string, email: string, phone: string, password: string) => {
     const phoneDigits = normalisePhone(phone);
     const emailTrim = email.trim().toLowerCase();
-    if (!phoneDigits && !emailTrim) {
-      throw Object.assign(new Error("Email or phone number is required."), {
+    if (!emailTrim || !emailTrim.includes("@")) {
+      throw Object.assign(new Error("A valid email is required to create an account."), {
         code: "auth/invalid-email",
       });
     }
@@ -237,7 +237,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         code: "auth/invalid-phone",
       });
     }
-    const authEmail = emailTrim || phoneAuthEmail(phoneDigits);
+    const authEmail = emailTrim;
     const cred = await createUserWithEmailAndPassword(auth, authEmail, password);
     await updateProfile(cred.user, { displayName: name });
     try {
