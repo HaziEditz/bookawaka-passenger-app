@@ -23,6 +23,16 @@ function normalisePhone(raw: string): string {
   return raw.replace(/\D/g, "");
 }
 
+/**
+ * Produce canonical NZ-default phone: strip leading zero, prepend "64" if not
+ * already there. e.g. "0211234567" → "64211234567", "211234567" → "64211234567",
+ * "64211234567" → "64211234567".
+ */
+function toCanonical(digits: string): string {
+  const d = digits.replace(/^0+/, "");
+  return d.startsWith("64") ? d : `64${d}`;
+}
+
 function looksLikeEmail(raw: string): boolean {
   return raw.includes("@");
 }
@@ -58,11 +68,14 @@ async function resolveLoginEmail(identifier: string): Promise<string> {
     });
   }
 
-  const candidates = [digits];
-  if (digits.startsWith("0")) candidates.push(digits.slice(1));
-  else candidates.push(`0${digits}`);
-  if (digits.startsWith("64") && digits.length > 2) candidates.push(digits.slice(2));
-  else if (!digits.startsWith("64")) candidates.push(`64${digits}`);
+  // Build canonical form first (try as single lookup key), then fall back to
+  // variant set for backward compatibility with pre-migration rows.
+  const canonical = toCanonical(digits);
+  const candidates = new Set<string>([canonical, digits]);
+  if (digits.startsWith("0")) candidates.add(digits.slice(1));
+  else candidates.add(`0${digits}`);
+  if (digits.startsWith("64") && digits.length > 2) candidates.add(digits.slice(2));
+  else if (!digits.startsWith("64")) candidates.add(`64${digits}`);
 
   let indexedUid = "";
   for (const c of candidates) {
@@ -98,7 +111,7 @@ async function resolveLoginEmail(identifier: string): Promise<string> {
 
   // Scan users by phone when index is missing or poisoned (web_* key-only rows).
   try {
-    const candidateSet = new Set(candidates);
+    const candidateSet = candidates; // already a Set
     const usersSnap = await get(ref(rtdb, "users"));
     if (usersSnap.exists()) {
       let foundEmail = "";
@@ -107,7 +120,8 @@ async function resolveLoginEmail(identifier: string): Promise<string> {
         const u = child.val() as Record<string, unknown> | null;
         if (!u || typeof u !== "object") return;
         const phone = normalisePhone(String(u.phone ?? u.Phone ?? u.PhoneNo ?? ""));
-        if (!phone || !candidateSet.has(phone)) return;
+        if (!phone) return;
+        if (!candidateSet.has(phone) && !candidateSet.has(toCanonical(phone))) return;
         const email = String(u.email ?? "").trim();
         if (email.includes("@")) foundEmail = email.toLowerCase();
       });
@@ -118,7 +132,7 @@ async function resolveLoginEmail(identifier: string): Promise<string> {
   }
 
   // Phone-only accounts created by this app use a deterministic email.
-  return phoneAuthEmail(digits);
+  return phoneAuthEmail(canonical || digits);
 }
 
 export interface UserProfile {
@@ -158,21 +172,17 @@ async function persistExpoPushToken(uid: string) {
   }
 }
 
+/**
+ * Write a single canonical phone-index row.
+ * digits must already be in canonical form (e.g. "6421123567") — the PhoneInput
+ * component enforces this at the UI layer so we never need to generate variants.
+ * We use set() so any stale web_* / email-less poison row is fully displaced.
+ */
 async function writePhoneIndex(digits: string, uid: string, email: string) {
   if (!digits || !uid || isPoisonPassengerKey(uid) || !email.includes("@")) return;
   const payload = { key: uid, email: email.toLowerCase(), uid, updatedAt: Date.now() };
-  const candidates = [digits];
-  if (digits.startsWith("0")) candidates.push(digits.slice(1));
-  else candidates.push(`0${digits}`);
-  if (digits.startsWith("64") && digits.length > 2) candidates.push(digits.slice(2));
-  else if (!digits.startsWith("64")) candidates.push(`64${digits}`);
-  // Prefer set so web_* / email-less poison rows are fully displaced.
-  await Promise.all(
-    [...new Set(candidates)].map((c) =>
-      set(ref(rtdb, `passengerIndex/phone/${c}`), payload).catch(() =>
-        update(ref(rtdb, `passengerIndex/phone/${c}`), payload).catch(() => undefined),
-      ),
-    ),
+  await set(ref(rtdb, `passengerIndex/phone/${digits}`), payload).catch(() =>
+    update(ref(rtdb, `passengerIndex/phone/${digits}`), payload).catch(() => undefined),
   );
 }
 
@@ -271,7 +281,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const register = async (name: string, email: string, phone: string, password: string) => {
-    const phoneDigits = normalisePhone(phone);
+    // phone arrives as canonical digits from PhoneInput (e.g. "6421123567");
+    // still run through toCanonical so any free-text callers stay consistent.
+    const phoneDigits = toCanonical(normalisePhone(phone));
     const emailTrim = email.trim().toLowerCase();
     if (!emailTrim || !emailTrim.includes("@")) {
       throw Object.assign(new Error("A valid email is required to create an account."), {
@@ -343,7 +355,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const updateUserProfile = async (name: string, phone: string) => {
     if (!firebaseUser || !user) return;
-    const phoneDigits = normalisePhone(phone);
+    const phoneDigits = toCanonical(normalisePhone(phone));
     await updateProfile(firebaseUser, { displayName: name });
     await update(ref(rtdb, `users/${firebaseUser.uid}`), { name, phone: phoneDigits });
     if (phoneDigits && user.email) {

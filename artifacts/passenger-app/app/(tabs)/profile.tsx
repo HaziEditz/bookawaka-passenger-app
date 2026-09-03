@@ -14,6 +14,7 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { PhoneInput } from "@/components/PhoneInput";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AppBuildLabel } from "@/components/AppBuildLabel";
 import { useAuth } from "@/context/AuthContext";
@@ -469,17 +470,10 @@ export default function ProfileScreen() {
               />
             </View>
             <Text style={[styles.sectionTitle, { color: colors.mutedForeground, marginTop: 16 }]}>PHONE NUMBER</Text>
-            <View style={[styles.addrInput, { borderColor: colors.border, backgroundColor: colors.card, minHeight: 0 }]}>
-              <Feather name="phone" size={16} color={colors.mutedForeground} />
-              <TextInput
-                style={[styles.addrTextField, { color: colors.foreground }]}
-                placeholder="e.g. +64 21 123 4567"
-                placeholderTextColor={colors.mutedForeground}
-                value={editPhone}
-                onChangeText={setEditPhone}
-                keyboardType="phone-pad"
-              />
-            </View>
+            <PhoneInput
+              onChangeCanonical={setEditPhone}
+              initialCanonical={editPhone}
+            />
             {profileError ? (
               <View style={[styles.errorBox, { backgroundColor: colors.destructive + "15", borderColor: colors.destructive + "40" }]}>
                 <Feather name="alert-circle" size={14} color={colors.destructive} />

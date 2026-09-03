@@ -15,6 +15,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAuth } from "@/context/AuthContext";
 import { useColors } from "@/hooks/useColors";
+import { PhoneInput } from "@/components/PhoneInput";
 
 export default function RegisterScreen() {
   const colors = useColors();
@@ -22,6 +23,7 @@ export default function RegisterScreen() {
   const insets = useSafeAreaInsets();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
+  // phone holds the canonical digits-only string built by PhoneInput (e.g. "6421123567")
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -69,7 +71,7 @@ export default function RegisterScreen() {
     }
   };
 
-  const fields: {
+  const textFields: {
     placeholder: string;
     icon: keyof typeof Feather.glyphMap;
     value: string;
@@ -80,7 +82,6 @@ export default function RegisterScreen() {
   }[] = [
     { placeholder: "Full name", icon: "user", value: name, onChange: setName, keyboard: "default", capitalize: "words" },
     { placeholder: "Email", icon: "mail", value: email, onChange: setEmail, keyboard: "email-address", capitalize: "none" },
-    { placeholder: "Phone number", icon: "phone", value: phone, onChange: setPhone, keyboard: "phone-pad", capitalize: "none" },
     { placeholder: "Password", icon: "lock", value: password, onChange: setPassword, keyboard: "default", secure: true, capitalize: "none" },
   ];
 
@@ -107,7 +108,29 @@ export default function RegisterScreen() {
           </Text>
 
           <View style={styles.form}>
-            {fields.map((f) => (
+            {textFields.slice(0, 2).map((f) => (
+              <View
+                key={f.placeholder}
+                style={[styles.inputBox, { borderColor: colors.border, backgroundColor: colors.card }]}
+              >
+                <Feather name={f.icon} size={18} color={colors.mutedForeground} />
+                <TextInput
+                  style={[styles.input, { color: colors.foreground }]}
+                  placeholder={f.placeholder}
+                  placeholderTextColor={colors.mutedForeground}
+                  value={f.value}
+                  onChangeText={f.onChange}
+                  autoCapitalize={f.capitalize ?? "none"}
+                  keyboardType={f.keyboard}
+                  secureTextEntry={!!f.secure}
+                  autoCorrect={false}
+                  spellCheck={false}
+                />
+              </View>
+            ))}
+            <Text style={[styles.fieldLabel, { color: colors.mutedForeground }]}>Phone number</Text>
+            <PhoneInput onChangeCanonical={setPhone} />
+            {textFields.slice(2).map((f) => (
               <View
                 key={f.placeholder}
                 style={[styles.inputBox, { borderColor: colors.border, backgroundColor: colors.card }]}
@@ -177,6 +200,7 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   input: { flex: 1, fontSize: 15, fontFamily: "Inter_400Regular" },
+  fieldLabel: { fontSize: 12, fontFamily: "Inter_600SemiBold", letterSpacing: 0.5, textTransform: "uppercase", marginBottom: -4 },
   btn: {
     borderRadius: 12,
     paddingVertical: 16,
