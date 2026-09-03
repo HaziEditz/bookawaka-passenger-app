@@ -43,6 +43,10 @@ function resolveName(displayName: string | null): string {
   return "";
 }
 
+function isPoisonPassengerKey(key: string): boolean {
+  return !key || key === "guest" || key.startsWith("web_");
+}
+
 async function resolveLoginEmail(identifier: string): Promise<string> {
   const trimmed = identifier.trim();
   if (looksLikeEmail(trimmed)) return trimmed.toLowerCase();
@@ -66,10 +70,17 @@ async function resolveLoginEmail(identifier: string): Promise<string> {
       const snap = await get(ref(rtdb, `passengerIndex/phone/${c}`));
       if (!snap.exists()) continue;
       const row = snap.val() as Record<string, unknown>;
+      const key = String(row.key ?? row.uid ?? "").trim();
+      // Ignore web_* / guest poison rows — they steal phone login from Auth uids.
+      if (isPoisonPassengerKey(key) && !String(row.email ?? "").includes("@")) continue;
       const email = String(row.email ?? "").trim();
-      if (email.includes("@")) return email.toLowerCase();
+      if (email.includes("@") && !isPoisonPassengerKey(key)) return email.toLowerCase();
+      if (email.includes("@") && isPoisonPassengerKey(key)) {
+        // Email present but key is poison — still usable for Auth sign-in.
+        return email.toLowerCase();
+      }
       const uid = String(row.uid ?? row.key ?? "").trim();
-      if (uid && !indexedUid) indexedUid = uid;
+      if (uid && !isPoisonPassengerKey(uid) && !indexedUid) indexedUid = uid;
     } catch {
       // continue
     }
@@ -83,6 +94,27 @@ async function resolveLoginEmail(identifier: string): Promise<string> {
     } catch {
       // continue
     }
+  }
+
+  // Scan users by phone when index is missing or poisoned (web_* key-only rows).
+  try {
+    const candidateSet = new Set(candidates);
+    const usersSnap = await get(ref(rtdb, "users"));
+    if (usersSnap.exists()) {
+      let foundEmail = "";
+      usersSnap.forEach((child) => {
+        if (foundEmail || !child.key || isPoisonPassengerKey(child.key)) return;
+        const u = child.val() as Record<string, unknown> | null;
+        if (!u || typeof u !== "object") return;
+        const phone = normalisePhone(String(u.phone ?? u.Phone ?? u.PhoneNo ?? ""));
+        if (!phone || !candidateSet.has(phone)) return;
+        const email = String(u.email ?? "").trim();
+        if (email.includes("@")) foundEmail = email.toLowerCase();
+      });
+      if (foundEmail) return foundEmail;
+    }
+  } catch {
+    // continue
   }
 
   // Phone-only accounts created by this app use a deterministic email.
@@ -127,18 +159,18 @@ async function persistExpoPushToken(uid: string) {
 }
 
 async function writePhoneIndex(digits: string, uid: string, email: string) {
-  if (!digits) return;
-  const payload = { key: uid, email, uid, updatedAt: Date.now() };
+  if (!digits || !uid || isPoisonPassengerKey(uid) || !email.includes("@")) return;
+  const payload = { key: uid, email: email.toLowerCase(), uid, updatedAt: Date.now() };
   const candidates = [digits];
   if (digits.startsWith("0")) candidates.push(digits.slice(1));
   else candidates.push(`0${digits}`);
   if (digits.startsWith("64") && digits.length > 2) candidates.push(digits.slice(2));
   else if (!digits.startsWith("64")) candidates.push(`64${digits}`);
-  // Prefer update so we never wipe richer fields if a partial row exists.
+  // Prefer set so web_* / email-less poison rows are fully displaced.
   await Promise.all(
     [...new Set(candidates)].map((c) =>
-      update(ref(rtdb, `passengerIndex/phone/${c}`), payload).catch(() =>
-        set(ref(rtdb, `passengerIndex/phone/${c}`), payload).catch(() => undefined),
+      set(ref(rtdb, `passengerIndex/phone/${c}`), payload).catch(() =>
+        update(ref(rtdb, `passengerIndex/phone/${c}`), payload).catch(() => undefined),
       ),
     ),
   );

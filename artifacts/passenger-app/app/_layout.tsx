@@ -52,6 +52,7 @@ function RootLayoutNav() {
       <Stack.Screen name="stripe-return" options={{ headerShown: false }} />
       <Stack.Screen name="stripe-cancel" options={{ headerShown: false }} />
       <Stack.Screen name="edit-scheduled" options={{ headerShown: false }} />
+      <Stack.Screen name="history-detail" options={{ headerShown: false }} />
     </Stack>
   );
 }

@@ -1153,6 +1153,38 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
     const companyId = params.companyId;
     const passengerUid = fbUser?.uid ?? "guest";
 
+    // Prefer existing profile token; otherwise register now so create payload carries deviceUid
+    // (accept/Arrived push must not wait for the post-create async stamp).
+    let pushToken = "";
+    try {
+      if (passengerUid && passengerUid !== "guest") {
+        const userSnap = await rtdbGet(rtdbRef(rtdb, `users/${passengerUid}`));
+        pushToken = String(
+          userSnap.val()?.expoPushToken || userSnap.val()?.deviceUid || "",
+        ).trim();
+      }
+    } catch {
+      /* best-effort */
+    }
+    if (!pushToken) {
+      try {
+        pushToken = (await registerForPushNotificationsAsync()) || "";
+      } catch {
+        /* best-effort */
+      }
+    }
+    if (pushToken && passengerUid && passengerUid !== "guest") {
+      try {
+        await rtdbUpdate(rtdbRef(rtdb, `users/${passengerUid}`), {
+          expoPushToken: pushToken,
+          deviceUid: pushToken,
+          pushUpdatedAt: Date.now(),
+        });
+      } catch {
+        /* best-effort */
+      }
+    }
+
     // ── Build RTDB job payload ────────────────────────────────────────────
     // Sent to the API server which writes to all required Firebase paths.
     const rtdbJobData = {
@@ -1182,10 +1214,15 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       // Passenger
       PassengerName: authUser?.name ?? fbUser?.displayName ?? "Passenger",
       passengerName: authUser?.name ?? fbUser?.displayName ?? "Passenger",
+      Name: authUser?.name ?? fbUser?.displayName ?? "Passenger",
+      name: authUser?.name ?? fbUser?.displayName ?? "Passenger",
       PhoneNo: passengerPhone,
       phone: passengerPhone,
       passengerPhone,
       passengerId: passengerUid,
+      Passengers: params.passengerCount ?? 1,
+      PassengersNo: params.passengerCount ?? 1,
+      passengers: params.passengerCount ?? 1,
       // Pickup
       PickupAddress: params.pickup.address,
       pickupAddress: params.pickup.address,
@@ -1343,6 +1380,10 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       passengerUid: passengerUid,
       PassengerUid: passengerUid,
       PassengerId: passengerUid,
+      // Expo push token on create — INVT accept/Arrived before post-create stamp still works
+      ...(pushToken
+        ? { deviceUid: pushToken, DeviceUid: pushToken, expoPushToken: pushToken }
+        : {}),
     };
 
     // ── Send booking to API — all Firebase writes happen server-side ─────

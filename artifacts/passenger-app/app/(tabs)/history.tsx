@@ -1,5 +1,6 @@
 import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
+import { router } from "expo-router";
 import React, { useState } from "react";
 import {
   Alert,
@@ -42,7 +43,14 @@ export default function HistoryScreen() {
             onPress={() => {
               Alert.alert("Clear History", "Remove all trip history?", [
                 { text: "Cancel" },
-                { text: "Clear", style: "destructive", onPress: () => { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning); clearHistory(); } },
+                {
+                  text: "Clear",
+                  style: "destructive",
+                  onPress: () => {
+                    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+                    clearHistory();
+                  },
+                },
               ]);
             }}
           >
@@ -55,7 +63,10 @@ export default function HistoryScreen() {
         {FILTERS.map((f) => (
           <Pressable
             key={f.id}
-            onPress={() => { Haptics.selectionAsync(); setFilter(f.id); }}
+            onPress={() => {
+              Haptics.selectionAsync();
+              setFilter(f.id);
+            }}
             style={[
               styles.filterBtn,
               {
@@ -94,7 +105,15 @@ export default function HistoryScreen() {
             </Text>
           </View>
         }
-        renderItem={({ item }) => <HistoryCard item={item} />}
+        renderItem={({ item }) => (
+          <HistoryCard
+            item={item}
+            onPress={() => {
+              Haptics.selectionAsync();
+              router.push({ pathname: "/history-detail", params: { id: item.id } });
+            }}
+          />
+        )}
         ItemSeparatorComponent={() => <View style={styles.separator} />}
       />
     </View>
@@ -130,5 +149,10 @@ const styles = StyleSheet.create({
   separator: { height: 10 },
   empty: { alignItems: "center", paddingTop: 80, gap: 10 },
   emptyTitle: { fontSize: 18, fontFamily: "Inter_600SemiBold" },
-  emptyText: { fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center", paddingHorizontal: 30 },
+  emptyText: {
+    fontSize: 14,
+    fontFamily: "Inter_400Regular",
+    textAlign: "center",
+    paddingHorizontal: 30,
+  },
 });

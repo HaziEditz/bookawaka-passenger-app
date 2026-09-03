@@ -71,7 +71,7 @@ export default function RideCompleteScreen() {
     );
   }
 
-  const { pickup, destination, driver, fare, payment, rideshare, passengerCount, firestoreId, id } = ride;
+  const { pickup, destination, driver, fare, payment, rideshare, passengerCount, firestoreId, id, stops } = ride;
   const splitFare = rideshare && passengerCount && passengerCount > 1 ? Math.round((fare / passengerCount) * 100) / 100 : null;
   const yourFare = splitFare ?? fare;
   const total = yourFare + tip;
@@ -149,7 +149,21 @@ export default function RideCompleteScreen() {
         </View>
         <Text style={[styles.title, { color: colors.foreground }]}>Ride Complete!</Text>
         <Text style={[styles.subtitle, { color: colors.mutedForeground }]}>
-          {pickup.address.split(",")[0]} → {destination.address.split(",")[0]}
+          {pickup.address.split(",")[0]}
+          {(stops || [])
+            .map((s) => {
+              const addr = typeof s === "object" && s && "place" in s
+                ? String((s as { place?: { address?: string } }).place?.address || "")
+                : typeof s === "object" && s && "address" in s
+                  ? String((s as { address?: string }).address || "")
+                  : String(s || "");
+              return addr.split(",")[0].trim();
+            })
+            .filter(Boolean)
+            .map((label) => ` → ${label}`)
+            .join("")}
+          {" → "}
+          {destination.address.split(",")[0]}
         </Text>
 
         {rideshare && passengerCount && passengerCount > 1 && (

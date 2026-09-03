@@ -1,9 +1,10 @@
 import { Feather } from "@expo/vector-icons";
 import React from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useColors } from "@/hooks/useColors";
 import { HistoryItem } from "@/context/TripContext";
 import { FALLBACK_TZ } from "@/lib/timezone";
+import { formatCurrency } from "@/lib/fareCalculator";
 
 const SERVICE_ICONS: Record<string, keyof typeof Feather.glyphMap> = {
   taxi: "navigation",
@@ -23,7 +24,13 @@ const STATUS_COLORS: Record<string, string> = {
   en_route: "#1e40af",
 };
 
-export function HistoryCard({ item }: { item: HistoryItem }) {
+export function HistoryCard({
+  item,
+  onPress,
+}: {
+  item: HistoryItem;
+  onPress?: () => void;
+}) {
   const colors = useColors();
   const serviceColor = SERVICE_COLORS[item.serviceType] ?? colors.primary;
   const statusColor = STATUS_COLORS[item.status] ?? colors.mutedForeground;
@@ -45,7 +52,18 @@ export function HistoryCard({ item }: { item: HistoryItem }) {
   });
 
   return (
-    <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
+    <Pressable
+      onPress={onPress}
+      disabled={!onPress}
+      style={({ pressed }) => [
+        styles.card,
+        {
+          backgroundColor: colors.card,
+          borderColor: colors.border,
+          opacity: pressed && onPress ? 0.85 : 1,
+        },
+      ]}
+    >
       <View style={[styles.iconBox, { backgroundColor: serviceColor + "20" }]}>
         <Feather name={SERVICE_ICONS[item.serviceType] ?? "circle"} size={20} color={serviceColor} />
       </View>
@@ -60,10 +78,13 @@ export function HistoryCard({ item }: { item: HistoryItem }) {
               {item.status.replace("_", " ")}
             </Text>
           </View>
-          <Text style={[styles.price, { color: colors.foreground }]}>${item.price.toFixed(2)}</Text>
+          <Text style={[styles.price, { color: colors.foreground }]}>{formatCurrency(item.price)}</Text>
         </View>
       </View>
-    </View>
+      {onPress ? (
+        <Feather name="chevron-right" size={18} color={colors.mutedForeground} style={{ marginTop: 12 }} />
+      ) : null}
+    </Pressable>
   );
 }
 
