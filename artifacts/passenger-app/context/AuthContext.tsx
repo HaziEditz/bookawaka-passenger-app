@@ -24,13 +24,23 @@ function normalisePhone(raw: string): string {
 }
 
 /**
- * Produce canonical NZ-default phone: strip leading zero, prepend "64" if not
- * already there. e.g. "0211234567" → "64211234567", "211234567" → "64211234567",
- * "64211234567" → "64211234567".
+ * Produce canonical international phone digits.
+ * Leading trunk-zero = local national number → default NZ +64
+ *   e.g. "0211234567" → "64211234567", "0276698294" → "64276698294"
+ * Already-international (starts with known CC) left as-is
+ *   e.g. "64211234567" stays, "61412345678" (AU) stays.
+ * Bare national without 0 defaults to NZ.
  */
+const KNOWN_CC = ["64", "61", "1", "44", "65", "91", "86", "81", "82", "33", "49", "39", "34", "7", "55", "52", "27", "66", "62", "63", "84", "60"];
+
 function toCanonical(digits: string): string {
-  const d = digits.replace(/^0+/, "");
-  return d.startsWith("64") ? d : `64${d}`;
+  let d = digits.replace(/\D/g, "");
+  if (!d) return "";
+  const hadTrunkZero = d.startsWith("0");
+  if (hadTrunkZero) d = d.replace(/^0+/, "");
+  if (hadTrunkZero) return d ? `64${d}` : "";
+  if (KNOWN_CC.some((cc) => d.startsWith(cc) && d.length >= cc.length + 8)) return d;
+  return `64${d}`;
 }
 
 function looksLikeEmail(raw: string): boolean {
