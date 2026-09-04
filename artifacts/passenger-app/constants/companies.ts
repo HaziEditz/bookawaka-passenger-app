@@ -1,9 +1,6 @@
-﻿export type VehicleType = "Sedan" | "SUV" | "Van" | "Luxury" | "Wheelchair" | "Electric";
+export type VehicleType = "Sedan" | "SUV" | "Van" | "Luxury" | "Wheelchair" | "Electric";
 
-/** Booking UI option — "Any" omits VehicleType (open capacity-based matching). */
-export type VehicleTypeOption = "Any" | VehicleType;
-
-/** Booking UI option â€” "Any" omits VehicleType (open capacity-based matching). */
+/** Booking UI option - "Any" omits VehicleType (open capacity-based matching). */
 export type VehicleTypeOption = "Any" | VehicleType;
 
 export interface TariffRates {
