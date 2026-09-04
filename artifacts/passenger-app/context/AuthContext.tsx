@@ -7,7 +7,7 @@ import {
   updateProfile,
   User as FirebaseUser,
 } from "firebase/auth";
-import { get, onValue, ref, set, update } from "firebase/database";
+import { onValue, ref, set, update } from "firebase/database";
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { Platform } from "react-native";
 import { auth, rtdb } from "@/lib/firebase";
@@ -47,11 +47,6 @@ function looksLikeEmail(raw: string): boolean {
   return raw.includes("@");
 }
 
-/** Synthetic email for phone-only accounts (Firebase Auth requires an email). */
-function phoneAuthEmail(digits: string): string {
-  return `p${digits}@phone.bookawaka.users`;
-}
-
 /** Returns a human-readable name from Firebase Auth displayName only.
  *  Never uses the email address or its prefix — those are not names.
  *  Falls back to empty so the profile screen can prompt for a name. */
@@ -67,82 +62,50 @@ function isPoisonPassengerKey(key: string): boolean {
   return !key || key === "guest" || key.startsWith("web_");
 }
 
-async function resolveLoginEmail(identifier: string): Promise<string> {
-  const trimmed = identifier.trim();
-  if (looksLikeEmail(trimmed)) return trimmed.toLowerCase();
+function apiBaseUrl(): string {
+  const raw = (process.env.EXPO_PUBLIC_API_URL ?? "").replace(/\/+$/, "");
+  return raw || "https://bookawaka-production.up.railway.app";
+}
 
-  const digits = normalisePhone(trimmed);
-  if (!digits || digits.length < 7) {
-    throw Object.assign(new Error("Enter a valid email or phone number."), {
-      code: "auth/invalid-email",
+/**
+ * Phone login must go through the website API (Admin SDK). Client RTDB rules
+ * require auth for passengerIndex reads, so pre-login index lookups always fail
+ * on-device. Email identifiers stay on Firebase client Auth (unchanged).
+ */
+async function loginViaServer(identifier: string, password: string): Promise<string> {
+  const res = await fetch(`${apiBaseUrl()}/api/passenger-auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ identifier: identifier.trim(), password }),
+  });
+  const data = (await res.json().catch(() => ({}))) as {
+    email?: string;
+    error?: string;
+  };
+  if (!res.ok || !String(data.email || "").includes("@")) {
+    throw Object.assign(new Error(data.error || "Incorrect email/phone or password."), {
+      code: res.status === 401 ? "auth/invalid-credential" : "auth/invalid-email",
     });
   }
+  return String(data.email).trim().toLowerCase();
+}
 
-  // Build canonical form first (try as single lookup key), then fall back to
-  // variant set for backward compatibility with pre-migration rows.
-  const canonical = toCanonical(digits);
-  const candidates = new Set<string>([canonical, digits]);
-  if (digits.startsWith("0")) candidates.add(digits.slice(1));
-  else candidates.add(`0${digits}`);
-  if (digits.startsWith("64") && digits.length > 2) candidates.add(digits.slice(2));
-  else if (!digits.startsWith("64")) candidates.add(`64${digits}`);
-
-  let indexedUid = "";
-  for (const c of candidates) {
-    try {
-      const snap = await get(ref(rtdb, `passengerIndex/phone/${c}`));
-      if (!snap.exists()) continue;
-      const row = snap.val() as Record<string, unknown>;
-      const key = String(row.key ?? row.uid ?? "").trim();
-      // Ignore web_* / guest poison rows — they steal phone login from Auth uids.
-      if (isPoisonPassengerKey(key) && !String(row.email ?? "").includes("@")) continue;
-      const email = String(row.email ?? "").trim();
-      if (email.includes("@") && !isPoisonPassengerKey(key)) return email.toLowerCase();
-      if (email.includes("@") && isPoisonPassengerKey(key)) {
-        // Email present but key is poison — still usable for Auth sign-in.
-        return email.toLowerCase();
-      }
-      const uid = String(row.uid ?? row.key ?? "").trim();
-      if (uid && !isPoisonPassengerKey(uid) && !indexedUid) indexedUid = uid;
-    } catch {
-      // continue
-    }
+async function resetPasswordViaServer(identifier: string): Promise<string> {
+  const res = await fetch(`${apiBaseUrl()}/api/passenger-auth/forgot`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ identifier: identifier.trim() }),
+  });
+  const data = (await res.json().catch(() => ({}))) as {
+    email?: string;
+    error?: string;
+  };
+  if (!res.ok || !String(data.email || "").includes("@")) {
+    throw Object.assign(new Error(data.error || "No account found with that email or phone."), {
+      code: "auth/user-not-found",
+    });
   }
-
-  if (indexedUid) {
-    try {
-      const userSnap = await get(ref(rtdb, `users/${indexedUid}`));
-      const userEmail = String(userSnap.val()?.email ?? "").trim();
-      if (userEmail.includes("@")) return userEmail.toLowerCase();
-    } catch {
-      // continue
-    }
-  }
-
-  // Scan users by phone when index is missing or poisoned (web_* key-only rows).
-  try {
-    const candidateSet = candidates; // already a Set
-    const usersSnap = await get(ref(rtdb, "users"));
-    if (usersSnap.exists()) {
-      let foundEmail = "";
-      usersSnap.forEach((child) => {
-        if (foundEmail || !child.key || isPoisonPassengerKey(child.key)) return;
-        const u = child.val() as Record<string, unknown> | null;
-        if (!u || typeof u !== "object") return;
-        const phone = normalisePhone(String(u.phone ?? u.Phone ?? u.PhoneNo ?? ""));
-        if (!phone) return;
-        if (!candidateSet.has(phone) && !candidateSet.has(toCanonical(phone))) return;
-        const email = String(u.email ?? "").trim();
-        if (email.includes("@")) foundEmail = email.toLowerCase();
-      });
-      if (foundEmail) return foundEmail;
-    }
-  } catch {
-    // continue
-  }
-
-  // Phone-only accounts created by this app use a deterministic email.
-  return phoneAuthEmail(canonical || digits);
+  return String(data.email).trim().toLowerCase();
 }
 
 export interface UserProfile {
@@ -286,7 +249,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const login = async (identifier: string, password: string) => {
-    const email = await resolveLoginEmail(identifier);
+    const trimmed = identifier.trim();
+    // Email: Firebase client Auth directly (no passengerIndex needed).
+    if (looksLikeEmail(trimmed)) {
+      await signInWithEmailAndPassword(auth, trimmed.toLowerCase(), password);
+      return;
+    }
+    // Phone: server Admin resolve + Auth, then mirror into client Firebase session.
+    const email = await loginViaServer(trimmed, password);
     await signInWithEmailAndPassword(auth, email, password);
   };
 
@@ -345,9 +315,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const resetPassword = async (identifier: string): Promise<string> => {
-    const email = await resolveLoginEmail(identifier);
-    await sendPasswordResetEmail(auth, email);
-    return email;
+    const trimmed = identifier.trim();
+    if (looksLikeEmail(trimmed)) {
+      const email = trimmed.toLowerCase();
+      await sendPasswordResetEmail(auth, email);
+      return email;
+    }
+    // Phone: server Admin resolve + send reset (same path as website).
+    return resetPasswordViaServer(trimmed);
   };
 
   const logout = async () => {
