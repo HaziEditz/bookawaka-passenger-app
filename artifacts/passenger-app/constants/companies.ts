@@ -1,4 +1,10 @@
-export type VehicleType = "Sedan" | "SUV" | "Van" | "Luxury" | "Wheelchair" | "Electric";
+﻿export type VehicleType = "Sedan" | "SUV" | "Van" | "Luxury" | "Wheelchair" | "Electric";
+
+/** Booking UI option — "Any" omits VehicleType (open capacity-based matching). */
+export type VehicleTypeOption = "Any" | VehicleType;
+
+/** Booking UI option â€” "Any" omits VehicleType (open capacity-based matching). */
+export type VehicleTypeOption = "Any" | VehicleType;
 
 export interface TariffRates {
   baseFare: number;
@@ -24,8 +30,10 @@ export interface Company {
   tmApproved?: boolean;
   tmCarTariff?: TariffRates;
   tmWheelchairTariff?: TariffRates;
-  /** Informational only — never gates ASAP booking (Option 1 pool). */
+  /** Informational only â€” never gates ASAP booking (Option 1 pool). */
   driversAvailable?: boolean;
+  /** Live online body types for this company (empty = unknown / none online). */
+  onlineVehicleTypes?: VehicleType[];
   /**
    * ASAP allowed when company dispatch console is online (activeDispatchers)
    * AND within configured operating hours. Ignores individual driver status.
@@ -41,12 +49,17 @@ export interface Company {
 }
 
 export const VEHICLE_LABELS: Record<VehicleType, string> = {
-  Sedan: "Sedan",
+  Sedan: "Sedan / Car",
   SUV: "SUV",
   Van: "Van",
   Luxury: "Luxury",
   Wheelchair: "Accessible Van",
   Electric: "Electric",
+};
+
+export const VEHICLE_OPTION_LABELS: Record<VehicleTypeOption, string> = {
+  Any: "Any",
+  ...VEHICLE_LABELS,
 };
 
 export const VEHICLE_CAPACITY: Record<VehicleType, number> = {
@@ -76,5 +89,6 @@ export const VEHICLES: Record<VehicleType, Vehicle> = {
   Electric:  { type: "Electric",  label: "Electric",       capacity: 4, ...DEFAULT_TARIFFS.Electric },
 };
 
-// No mock drivers — the app waits for the real dispatcher to assign a real driver.
+// No mock drivers â€” the app waits for the real dispatcher to assign a real driver.
 export const MOCK_DRIVERS: Record<string, { name: string; rating: number; cab: string; plate: string; color: string }[]> = {};
+

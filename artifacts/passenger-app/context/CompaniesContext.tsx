@@ -542,6 +542,7 @@ export function CompaniesProvider({ children }: { children: React.ReactNode }) {
             ? (toTariff(tmWheelRaw as Record<string, unknown>) ?? undefined)
             : undefined,
           driversAvailable: hasAvailableDrivers,
+          onlineVehicleTypes: liveVehicles ? Array.from(liveVehicles) : [],
           dispatchOnline,
           operatingHours: hoursRaw || undefined,
           asapBookable: asap.allowed,

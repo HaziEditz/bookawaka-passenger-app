@@ -107,7 +107,10 @@ export interface ActiveRide {
   destination: PlaceDetail;
   stops: Stop[];
   companyId: string;
-  vehicleType: VehicleType;
+  vehicleType: VehicleType | "Any";
+  /** When passenger accepts open substitute: fare stays locked to this type. */
+  fareLockedVehicleType?: VehicleType;
+  requestedVehicleType?: string;
   payment: PaymentMethodRide;
   walletAmountPending?: number;
   fare: number;
@@ -1031,7 +1034,7 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
           lat: params.destination.location.latitude,
           lng: params.destination.location.longitude,
         },
-        tariffId: params.vehicleType,
+        tariffId: params.vehicleType === "Any" || !params.vehicleType ? "Sedan" : params.vehicleType,
         notes: params.pickupNote ?? "",
       },
       onRetry,
@@ -1200,17 +1203,27 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       // Status logic (payment-first — matches website POST /bookings):
       //   Card (ASAP or scheduled) → PendingPayment until Stripe confirms
       //   Scheduled non-card → Scheduled (dispatch can see prebook in pendingjobs)
-      //   ASAP non-card → Waiting
+      //   ASAP non-card → Pending (Offer-tab pool; matches website)
       Status: params.payment === "card"
         ? "PendingPayment"
         : params.scheduledAt
           ? "Scheduled"
-          : "Waiting",
+          : "Pending",
       status: params.payment === "card"
         ? "PendingPayment"
         : params.scheduledAt
           ? "Scheduled"
-          : "Waiting",
+          : "Pending",
+      BookingStatus: params.payment === "card"
+        ? "PendingPayment"
+        : params.scheduledAt
+          ? "Scheduled"
+          : "Pending",
+      bookingStatus: params.payment === "card"
+        ? "PendingPayment"
+        : params.scheduledAt
+          ? "Scheduled"
+          : "Pending",
       // Passenger
       PassengerName: authUser?.name ?? fbUser?.displayName ?? "Passenger",
       passengerName: authUser?.name ?? fbUser?.displayName ?? "Passenger",
@@ -1266,8 +1279,20 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       PassengerEmail: authUser?.email ?? fbUser?.email ?? "",
       passengerEmail: authUser?.email ?? fbUser?.email ?? "",
       // Booking details
-      VehicleType: params.vehicleType,
-      vehicleType: params.vehicleType,
+      // "Any" / blank → omit VehicleType (open capacity matching, same as website).
+      // Explicit Sedan/Van → exclusive stamp.
+      ...(() => {
+        const raw = String(params.vehicleType ?? "").trim();
+        if (!raw || /^(any|not\s*specified|all)$/i.test(raw)) return {};
+        return { VehicleType: raw, vehicleType: raw };
+      })(),
+      ...(params.fareLockedVehicleType
+        ? {
+            FareLockedVehicleType: params.fareLockedVehicleType,
+            fareLockedVehicleType: params.fareLockedVehicleType,
+            RequestedVehicleType: params.requestedVehicleType ?? params.fareLockedVehicleType,
+          }
+        : {}),
       EstimatedFare: params.fare,
       estimatedFare: params.fare,
       CustomeRate: params.fare,

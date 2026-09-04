@@ -21,7 +21,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { PlacesAutocomplete } from "@/components/PlacesAutocomplete";
 import { RouteMap } from "@/components/RouteMap";
 import { TMCardScanner } from "@/components/TMCardScanner";
-import { Company, VehicleType, VEHICLES, VEHICLE_CAPACITY, VEHICLE_LABELS } from "@/constants/companies";
+import { Company, VehicleType, VehicleTypeOption, VEHICLES, VEHICLE_CAPACITY, VEHICLE_LABELS, VEHICLE_OPTION_LABELS } from "@/constants/companies";
 import { useCompanies, getVehicleTariff, isLoadTestCompanyId } from "@/context/CompaniesContext";
 import { useAuth } from "@/context/AuthContext";
 import { useNotification } from "@/context/NotificationContext";
@@ -56,6 +56,23 @@ function pickNeedBasedVehicle(available: VehicleType[], paxNeeded: number): Vehi
   return anyFit ?? list[0] ?? "Sedan";
 }
 
+/** Tariff / estimate vehicle — Any prices as Sedan (website parity). */
+function fareVehicleForOption(opt: VehicleTypeOption, pax: number): VehicleType {
+  if (pax >= 5) return "Van";
+  if (opt === "Any") return "Sedan";
+  return opt;
+}
+
+function typeAvailableOnline(company: Company, opt: VehicleTypeOption): boolean | null {
+  if (opt === "Any") return true;
+  const online = company.onlineVehicleTypes;
+  if (!online || online.length === 0) return null; // unknown — do not block
+  if (opt === "Sedan" || opt === "SUV" || opt === "Luxury" || opt === "Electric") {
+    return online.some((t) => ["Sedan", "SUV", "Luxury", "Electric"].includes(t));
+  }
+  return online.includes(opt);
+}
+
 type Step = "location" | "vehicle" | "confirm";
 
 export default function BookingScreen() {
@@ -74,9 +91,8 @@ export default function BookingScreen() {
   const [stops, setStops] = useState<Stop[]>([]);
   const [addingStop, setAddingStop] = useState(false);
   const [company, setCompany] = useState<Company>(companies[0]);
-  const [vehicleType, setVehicleType] = useState<VehicleType>(() =>
-    pickNeedBasedVehicle(companies[0]?.vehicles ?? ["Sedan"], 1),
-  );
+  const [vehicleType, setVehicleType] = useState<VehicleTypeOption>("Any");
+  const [fareLockedVehicleType, setFareLockedVehicleType] = useState<VehicleType | undefined>(undefined);
   const [route, setRoute] = useState<RouteResult | null>(null);
   const [loadingRoute, setLoadingRoute] = useState(false);
   const [payment, setPayment] = useState<PaymentMethodRide>("card");
@@ -248,7 +264,7 @@ export default function BookingScreen() {
           companies[0];
         // If company is actually changing, reset vehicleType to need-based default
         if (next.id !== prev.id && next.vehicles.length > 0) {
-          setVehicleType(pickNeedBasedVehicle(next.vehicles, passengerCount));
+          setVehicleType(passengerCount >= 5 ? "Van" : "Any"); setFareLockedVehicleType(undefined);
         }
         return next;
       });
@@ -257,18 +273,26 @@ export default function BookingScreen() {
 
   // Whenever company changes explicitly (user tap), reset vehicleType if current type unavailable
   useEffect(() => {
-    if (company.vehicles.length > 0 && !company.vehicles.includes(vehicleType)) {
-      setVehicleType(pickNeedBasedVehicle(company.vehicles, passengerCount));
+    if (vehicleType !== "Any" && company.vehicles.length > 0 && !company.vehicles.includes(vehicleType)) {
+      setVehicleType(passengerCount >= 5 ? "Van" : "Any"); setFareLockedVehicleType(undefined);
     }
   }, [company.id]);
 
   // Pax count can force a larger class — bump tariff type when needed.
   useEffect(() => {
     if (!company?.vehicles?.length) return;
-    if (VEHICLE_CAPACITY[vehicleType] < passengerCount) {
-      setVehicleType(pickNeedBasedVehicle(company.vehicles, passengerCount));
+    if (passengerCount >= 5) {
+      if (vehicleType !== "Van") {
+        setVehicleType("Van");
+        setFareLockedVehicleType(undefined);
+      }
+      return;
     }
-  }, [passengerCount, company.id]);
+    if (vehicleType !== "Any" && (VEHICLE_CAPACITY[vehicleType] ?? 0) < passengerCount) {
+      setVehicleType("Any");
+      setFareLockedVehicleType(undefined);
+    }
+  }, [passengerCount, company.id, vehicleType]);
   // TM state
   const [isTM, setIsTM] = useState(false);
 
@@ -292,10 +316,11 @@ export default function BookingScreen() {
   const hoistCount = tmPassengers.filter((p) => p.needsHoist).length;
   const totalHoistFee = hoistCount * tmSettings.hoistFeePerLift;
 
+  const fareVehicleType = fareVehicleForOption(vehicleType, passengerCount);
   const activeTMTariff = isTM
-    ? (vehicleType === "Wheelchair"
-        ? company.tmWheelchairTariff ?? getVehicleTariff(company, vehicleType)
-        : company.tmCarTariff ?? getVehicleTariff(company, vehicleType))
+    ? (fareVehicleType === "Wheelchair"
+        ? company.tmWheelchairTariff ?? getVehicleTariff(company, fareVehicleType)
+        : company.tmCarTariff ?? getVehicleTariff(company, fareVehicleType))
     : undefined;
 
   const useCurrentLocation = async () => {
@@ -410,7 +435,7 @@ export default function BookingScreen() {
       result.durationSeconds,
       vehicleType,
       stops.length,
-      getVehicleTariff(company, vehicleType),
+      getVehicleTariff(company, fareVehicleForOption(vehicleType, passengerCount)),
     );
     const sanity = checkTripSanity({
       distanceMeters: result.distanceMeters,
@@ -437,9 +462,9 @@ export default function BookingScreen() {
     return result;
   };
 
-  const activeTariff = activeTMTariff ?? getVehicleTariff(company, vehicleType);
+  const activeTariff = activeTMTariff ?? getVehicleTariff(company, fareVehicleType);
   const fare = route
-    ? calculateFare(route.distanceMeters, route.durationSeconds, vehicleType, stops.length, activeTariff)
+    ? calculateFare(route.distanceMeters, route.durationSeconds, fareVehicleType, stops.length, activeTariff)
     : null;
 
   const discountedFare = fare ? Math.round(fare.total * (1 - discount) * 100) / 100 : null;
@@ -804,6 +829,35 @@ export default function BookingScreen() {
       return;
     }
 
+
+    // Explicit type with no matching online unit → offer open booking at locked fare (never more).
+    let bookVehicleType: VehicleTypeOption = vehicleType;
+    let bookFareLock = fareLockedVehicleType;
+    if (passengerCount < 5 && vehicleType !== "Any") {
+      const avail = typeAvailableOnline(effectiveCompany, vehicleType);
+      if (avail === false) {
+        const label = VEHICLE_OPTION_LABELS[vehicleType];
+        const accepted = await new Promise<boolean>((resolve) => {
+          Alert.alert(
+            `No ${label.toLowerCase()} available`,
+            `No ${label.toLowerCase()} available right now — want to book with an available vehicle instead? Same price as ${label.toLowerCase()}, never more than you'd pay for a ${label.toLowerCase()}.`,
+            [
+              { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+              {
+                text: "Book available vehicle",
+                onPress: () => resolve(true),
+              },
+            ],
+          );
+        });
+        if (!accepted) return;
+        bookVehicleType = "Any";
+        bookFareLock = vehicleType === "Any" ? "Sedan" : vehicleType;
+        setVehicleType("Any");
+        setFareLockedVehicleType(bookFareLock);
+      }
+    }
+
     setStripeError(null);
     setBooking(true);
     setBookingStatus("Connecting…");
@@ -816,7 +870,9 @@ export default function BookingScreen() {
           destination,
           stops,
           companyId: effectiveCompany.id,
-          vehicleType,
+          vehicleType: bookVehicleType,
+          fareLockedVehicleType: bookFareLock,
+          requestedVehicleType: vehicleType,
           payment,
           walletAmountPending: payment === "card" && walletContribution > 0 ? walletContribution : 0,
           fare: discountedFare ?? fare?.total ?? 0,
@@ -1434,7 +1490,9 @@ export default function BookingScreen() {
                           onPress={() => {
                             Haptics.selectionAsync();
                             setPassengerCount(n);
-                            setVehicleType(pickNeedBasedVehicle(company.vehicles, n));
+                            setFareLockedVehicleType(undefined);
+                            if (n >= 5) setVehicleType("Van");
+                            else if (vehicleType === "Van" && n < 5) setVehicleType("Any");
                           }}
                           style={[
                             styles.passengerBtn,
@@ -1461,25 +1519,27 @@ export default function BookingScreen() {
                   </>
                 )}
                 <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>VEHICLE TYPE</Text>
+                <Text style={[styles.rideshareSub, { color: colors.mutedForeground, marginBottom: 8 }]}>
+                  Any = first suitable vehicle. Specific type = exclusive match (no silent substitute).
+                </Text>
                 <View style={styles.vehicleGrid}>
-                  {company.vehicles.map((v) => {
+                  {(["Any", ...company.vehicles.filter((v) => v !== "Any")] as VehicleTypeOption[]).map((v) => {
                     const isSelected = vehicleType === v;
-                    const liveTariff = getVehicleTariff(company, v);
+                    const concrete = v === "Any" ? fareVehicleForOption("Any", passengerCount) : v;
+                    const liveTariff = getVehicleTariff(company, concrete);
                     const tmTariff = isTM
                       ? (v === "Wheelchair" ? company.tmWheelchairTariff : company.tmCarTariff) ?? liveTariff
                       : undefined;
-                    const vFare = route ? calculateFare(route.distanceMeters, route.durationSeconds, v, stops.length, tmTariff ?? liveTariff) : null;
+                    const vFare = route ? calculateFare(route.distanceMeters, route.durationSeconds, concrete, stops.length, tmTariff ?? liveTariff) : null;
                     const vSplit = isTM && vFare ? calcTMSubsidy(vFare.total, tmSettings) : null;
-                    const vIcon = v === "Wheelchair" ? "truck" : v === "Electric" ? "zap" : v === "Luxury" ? "award" : v === "Van" ? "truck" : "navigation";
+                    const vIcon = v === "Any" ? "layers" : v === "Wheelchair" ? "truck" : v === "Electric" ? "zap" : v === "Luxury" ? "award" : v === "Van" ? "truck" : "navigation";
                     return (
                       <Pressable
                         key={v}
                         onPress={() => {
                           Haptics.selectionAsync();
                           setVehicleType(v);
-                          if (company.vehicles.length === 1) {
-                            setTimeout(() => goToConfirm(), 120);
-                          }
+                          setFareLockedVehicleType(undefined);
                         }}
                         style={({ pressed }) => [
                           styles.vehicleCard,
@@ -1487,9 +1547,9 @@ export default function BookingScreen() {
                         ]}
                       >
                         <Feather name={vIcon} size={20} color={isSelected ? "#fff" : colors.mutedForeground} />
-                        <Text style={[styles.vehicleLabel, { color: isSelected ? "#fff" : colors.foreground }]}>{VEHICLE_LABELS[v]}</Text>
+                        <Text style={[styles.vehicleLabel, { color: isSelected ? "#fff" : colors.foreground }]}>{VEHICLE_OPTION_LABELS[v]}</Text>
                         <Text style={[styles.vehicleCap, { color: isSelected ? "rgba(255,255,255,0.7)" : colors.mutedForeground }]}>
-                          {VEHICLE_CAPACITY[v]} seats
+                          {v === "Any" ? "Capacity-based" : `${VEHICLE_CAPACITY[v]} seats`}
                         </Text>
                         {vFare && !isTM && (
                           <Text style={[styles.vehiclePrice, { color: isSelected ? "#fff" : colors.primary }]}>
@@ -1631,7 +1691,7 @@ export default function BookingScreen() {
 
               <View style={styles.fareRow}>
                 <Text style={[styles.fareLabel, { color: colors.mutedForeground }]}>Vehicle</Text>
-                <Text style={[styles.fareValue, { color: colors.foreground }]}>{VEHICLE_LABELS[vehicleType]} · {company.name}</Text>
+                <Text style={[styles.fareValue, { color: colors.foreground }]}>{VEHICLE_OPTION_LABELS[vehicleType]} · {company.name}</Text>
               </View>
             </View>
 
