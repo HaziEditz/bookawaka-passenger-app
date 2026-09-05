@@ -119,7 +119,9 @@ export default function HomeScreen() {
           <View style={styles.activeBannerText}>
             <Text style={styles.activeBannerTitle}>
               {activeRide.status === "searching"
-                ? "Finding your driver…"
+                ? activeRide.recallNotice
+                  ? "Finding another driver…"
+                  : "Finding your driver…"
                 : activeRide.status === "arrived"
                   ? "Driver has arrived"
                   : activeRide.status === "in_progress"
@@ -127,7 +129,9 @@ export default function HomeScreen() {
                     : "Active Ride"}
             </Text>
             <Text style={styles.activeBannerSub}>
-              {activeRide.pickup.address.split(",")[0]} → {activeRide.destination.address.split(",")[0]}
+              {activeRide.recallNotice && activeRide.status === "searching"
+                ? "Your car was taken by someone else — booking still active"
+                : `${activeRide.pickup.address.split(",")[0]} → ${activeRide.destination.address.split(",")[0]}`}
             </Text>
             <Text style={[styles.activeBannerSub, { opacity: 0.85, marginTop: 2 }]}>
               Tap to track, edit stops, or cancel

@@ -330,7 +330,31 @@ export default function ActiveRideScreen() {
         />
 
         {/* Booking received banner — shown while dispatcher hasn't assigned a driver yet */}
-        {status === "searching" && (
+        {status === "searching" && !!activeRide.recallNotice && (
+          <View style={[styles.bookingReceivedBanner, { backgroundColor: "#b4530912", borderColor: "#b4530935" }]}>
+            <View style={styles.bookingReceivedTop}>
+              <View style={[styles.bookingReceivedIcon, { backgroundColor: "#b4530920" }]}>
+                <Feather name="alert-circle" size={18} color="#b45309" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.bookingReceivedTitle, { color: "#7c2d12" }]}>
+                  Your car was taken by someone else
+                </Text>
+                <Text style={[styles.bookingReceivedBody, { color: "#374151" }]}>
+                  {activeRide.recallNotice.message}
+                </Text>
+              </View>
+            </View>
+            <View style={[styles.bookingRefRow, { borderTopColor: "#b4530920" }]}>
+              <Feather name="hash" size={12} color="#6b7280" />
+              <Text style={styles.bookingRefText}>
+                Ref: {activeRide.firestoreId ?? activeRide.id}
+              </Text>
+            </View>
+          </View>
+        )}
+
+        {status === "searching" && !activeRide.recallNotice && (
           <View style={[styles.bookingReceivedBanner, { backgroundColor: "#1e40af12", borderColor: "#2563eb30" }]}>
             <View style={styles.bookingReceivedTop}>
               <View style={styles.bookingReceivedIcon}>

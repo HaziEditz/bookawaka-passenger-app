@@ -150,6 +150,15 @@ export interface ActiveRide {
   pickupPin?: string;
   imComingAt?: string;
   noShowDeadlineAt?: string;
+  /**
+   * Persistent wrong-passenger / recall banner while finding another driver.
+   * Cleared when a new driver is confirmed (RecallStatus cleared on accept).
+   */
+  recallNotice?: {
+    message: string;
+    at: number;
+    reason?: string;
+  } | null;
   // Cancellation policy tracking
   acceptedAt?: number;                  // timestamp (ms) when driver was first confirmed
   driverStartDistanceToPickup?: number; // km from driver's position at acceptance to pickup
@@ -612,6 +621,26 @@ function historyPayloadFromRide(ride: ActiveRide): HistoryWriteInput {
   };
 }
 
+/** Parse recall flags from rideStatus / Passengerjobs (same field names on both). */
+function readRecallFromSnap(d: Record<string, unknown>): {
+  recalled: boolean;
+  message: string;
+  reason?: string;
+} {
+  const recallStatus = String(d.RecallStatus ?? d.recallStatus ?? "").trim();
+  const notif =
+    d.recallNotification && typeof d.recallNotification === "object"
+      ? (d.recallNotification as Record<string, unknown>)
+      : null;
+  const recalled = recallStatus === "Recalled" || !!(notif && (notif.message || notif.reason));
+  if (!recalled) return { recalled: false, message: "" };
+  const message =
+    String(d.message || notif?.message || "").trim() ||
+    "Your car was taken by someone else. We're finding you another driver — your booking is still active.";
+  const reason = String(notif?.reason || "").trim() || undefined;
+  return { recalled: true, message, reason };
+}
+
 function RideProviderInner({ children }: { children: React.ReactNode }) {
   const { notify } = useNotification();
   const { updateWallet, user: authUser } = useAuth();
@@ -980,23 +1009,28 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
           });
         }
 
-        // Recall detection — dispatcher backend writes RecallStatus: "Recalled" to rideStatus
-        const recallStatus = (data as any).RecallStatus as string | undefined;
-        if (recallStatus === "Recalled") {
-          notify(
-            "Driver Recalled",
-            "Your driver had to return your booking to queue. A new driver will be allocated shortly.",
-            "warning"
-          );
+        // Recall detection — dispatcher writes RecallStatus on rideStatus AND Passengerjobs
+        const recall = readRecallFromSnap(data as Record<string, unknown>);
+        if (recall.recalled) {
+          notify("Finding another driver", recall.message, "warning");
           stopMockDriverTimer();
           stopSimulation();
           dispatchOverrideRef.current = false;
-          // Reset to searching state — clear driver, ETA
           setActiveRide((prev) => {
             if (!prev) return prev;
-            // Re-run mock simulation after a short delay as fallback
             setTimeout(() => startDriverSimulation(pickup, destination), 4000);
-            return { ...prev, status: "searching", driver: undefined, eta: null };
+            return {
+              ...prev,
+              status: "searching",
+              driver: undefined,
+              eta: null,
+              searchPhase: "waiting",
+              recallNotice: {
+                message: recall.message,
+                at: Date.now(),
+                reason: recall.reason,
+              },
+            };
           });
         }
       },
@@ -1775,18 +1809,56 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
         "cancel_requested",
       ]);
 
-      // Wrong-passenger / driver recall — INVT writes RecallStatus on rideStatus RTDB.
-      const recallStatus = String(d.RecallStatus ?? d.recallStatus ?? "").trim();
-      if (recallStatus === "Recalled") {
-        const recallMsg = String(d.message || "").trim() ||
-          "Your driver had to return your booking to queue. A new driver will be allocated shortly.";
+      // Wrong-passenger / driver recall — INVT writes RecallStatus on rideStatus + Passengerjobs.
+      const recall = readRecallFromSnap(d as Record<string, unknown>);
+      if (recall.recalled) {
         setActiveRide((prev) => {
-          if (!prev || prev.status === "searching") return prev;
-          setTimeout(() => notify("Driver Recalled", recallMsg, "warning"), 0);
+          if (!prev) return prev;
+          // Already showing persistent notice — don't spam toast on every RTDB tick.
+          const alreadyNoticed =
+            prev.status === "searching" &&
+            !!prev.recallNotice &&
+            prev.recallNotice.message === recall.message;
+          if (!alreadyNoticed) {
+            setTimeout(() => notify("Finding another driver", recall.message, "warning"), 0);
+          }
           stopMockDriverTimer();
           stopSimulation();
           dispatchOverrideRef.current = false;
-          return { ...prev, status: "searching", driver: undefined, eta: null, searchPhase: "waiting" };
+          return {
+            ...prev,
+            status: "searching",
+            driver: undefined,
+            eta: null,
+            searchPhase: "waiting",
+            recallNotice: {
+              message: recall.message,
+              at: prev.recallNotice?.at ?? Date.now(),
+              reason: recall.reason ?? prev.recallNotice?.reason,
+            },
+          };
+        });
+      } else if (String(d.RecallStatus ?? d.recallStatus ?? "").trim() !== "Recalled") {
+        // Accept cleared RecallStatus — drop sticky banner once a driver is (re)bound.
+        setActiveRide((prev) => {
+          if (!prev?.recallNotice) return prev;
+          const st = String(d.Status ?? d.status ?? d.BookingStatus ?? "").toLowerCase();
+          const hasDriver =
+            !!(d.DriverId || d.driverId) &&
+            String(d.DriverId ?? d.driverId ?? "").trim() !== "0";
+          if (
+            hasDriver ||
+            st === "assigned" ||
+            st === "accepted" ||
+            st === "picking" ||
+            st === "arrived" ||
+            st === "active" ||
+            st === "onboard" ||
+            st === "on board"
+          ) {
+            return { ...prev, recallNotice: null };
+          }
+          return prev;
         });
       }
 
@@ -1882,7 +1954,11 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
                 void recordCompletedTripHistory(snap);
               }, 0);
             }
-            return { ...prev, status: mapped };
+            return {
+              ...prev,
+              status: mapped,
+              recallNotice: mapped === "searching" ? prev.recallNotice : null,
+            };
           });
         }
       }
@@ -3076,24 +3152,45 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
             if ((rank[mapped] ?? 0) < (rank[prev.status] ?? 0)) return prev;
             const n = STATUS_NOTIFY[mapped];
             if (n && mapped !== "searching") setTimeout(() => notify(n[0], n[1], n[2]), 0);
-            return { ...prev, status: mapped };
+            return { ...prev, status: mapped, recallNotice: mapped === "searching" ? prev.recallNotice : null };
           });
         }
       }
-      if (String(d.RecallStatus ?? "") === "Recalled") {
+      if (readRecallFromSnap(d as Record<string, unknown>).recalled) {
+        const recall = readRecallFromSnap(d as Record<string, unknown>);
         setActiveRide((prev) => {
-          if (!prev || prev.status === "searching") return prev;
-          setTimeout(
-            () =>
-              notify(
-                "Driver Recalled",
-                String(d.message || "Your booking was returned to the queue. Finding another driver."),
-                "warning",
-              ),
-            0,
-          );
+          if (!prev) return prev;
+          const alreadyNoticed =
+            prev.status === "searching" &&
+            !!prev.recallNotice &&
+            prev.recallNotice.message === recall.message;
+          if (!alreadyNoticed) {
+            setTimeout(
+              () =>
+                notify(
+                  "Finding another driver",
+                  recall.message ||
+                    "Your booking was returned to the queue. Finding another driver.",
+                  "warning",
+                ),
+              0,
+            );
+          }
           dispatchOverrideRef.current = false;
-          return { ...prev, status: "searching", driver: undefined, eta: null, searchPhase: "waiting" };
+          return {
+            ...prev,
+            status: "searching",
+            driver: undefined,
+            eta: null,
+            searchPhase: "waiting",
+            recallNotice: {
+              message:
+                recall.message ||
+                "Your booking was returned to the queue. Finding another driver.",
+              at: prev.recallNotice?.at ?? Date.now(),
+              reason: recall.reason,
+            },
+          };
         });
       }
     };
