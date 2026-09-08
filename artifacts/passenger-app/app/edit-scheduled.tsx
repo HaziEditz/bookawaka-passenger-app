@@ -23,6 +23,7 @@ import { useNotification } from "@/context/NotificationContext";
 import { useRide } from "@/context/RideContext";
 import { useColors } from "@/hooks/useColors";
 import { cancelBookingOnServer } from "@/lib/bookingApi";
+import { bookingTimeCancelRules } from "@/lib/cancelFairness";
 import { getRoute } from "@/lib/directions";
 import { calculateFare, formatCurrency } from "@/lib/fareCalculator";
 import { rtdb } from "@/lib/firebase";
@@ -216,7 +217,8 @@ export default function EditScheduledScreen() {
   };
 
   const onCancelBooking = () => {
-    Alert.alert("Cancel this booking?", "The company will be notified.", [
+    const isTM = paymentMethod.toLowerCase().includes("tm");
+    Alert.alert("Cancel this booking?", bookingTimeCancelRules(paymentMethod, isTM), [
       { text: "Keep", style: "cancel" },
       {
         text: "Cancel booking",
@@ -224,7 +226,7 @@ export default function EditScheduledScreen() {
         onPress: async () => {
           try {
             const cancelledAt = new Date().toISOString();
-            await cancelBookingOnServer({
+            const apiResult = await cancelBookingOnServer({
               companyId,
               jobId,
               cancelFields: {
@@ -238,7 +240,11 @@ export default function EditScheduledScreen() {
               },
               mode: "intentional",
             });
-            notify("Booking cancelled", "Your scheduled ride was cancelled.", "info");
+            const msg = String(
+              (apiResult && (apiResult.passengerMessage || (apiResult.fairness as Record<string, unknown> | undefined)?.passengerMessage)) ||
+                "Your scheduled ride was cancelled.",
+            );
+            notify("Booking cancelled", msg, "info");
             router.replace("/(tabs)/scheduled");
           } catch (e) {
             notify("Cancel failed", (e as Error).message || "Try again.", "error");

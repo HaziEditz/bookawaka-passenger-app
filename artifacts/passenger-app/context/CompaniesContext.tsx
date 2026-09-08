@@ -153,6 +153,7 @@ export function CompaniesProvider({ children }: { children: React.ReactNode }) {
     let companySettingsData: Record<string, Record<string, unknown>> = {};
     /** Names from GET /api/companies (Admin SDK) — used when RTDB companyProfiles is unreadable. */
     let apiNameById: Record<string, string> = {};
+    let apiPhoneById: Record<string, string> = {};
     let loaded = {
       companies: false,
       online: false,
@@ -495,6 +496,10 @@ export function CompaniesProvider({ children }: { children: React.ReactNode }) {
 
 
         const settings = (companySettingsData[id] || {}) as Record<string, unknown>;
+        const phoneRaw = String(
+          data.phone ?? data.contactPhone ?? data.dispatchPhone ?? data.officePhone ??
+          settings.phone ?? settings.contactPhone ?? apiPhoneById[id] ?? "",
+        ).trim();
         const hoursRaw = String(
           settings.operatingHours ??
             settings.operating_hours ??
@@ -547,6 +552,7 @@ export function CompaniesProvider({ children }: { children: React.ReactNode }) {
           operatingHours: hoursRaw || undefined,
           asapBookable: asap.allowed,
           ownerEmail,
+          phone: phoneRaw.length >= 7 ? phoneRaw : undefined,
           timezone: (() => {
             const raw = String(
               data.timezone ?? data.timeZone ?? data.time_zone ?? data.tz ?? timezone ?? ""
@@ -646,15 +652,19 @@ export function CompaniesProvider({ children }: { children: React.ReactNode }) {
       try {
         const res = await fetch(`${base}/api/companies`);
         if (!res.ok) return;
-        const json = (await res.json()) as { companies?: Array<{ id?: string; name?: string }> };
+        const json = (await res.json()) as { companies?: Array<{ id?: string; name?: string; phone?: string }> };
         const map: Record<string, string> = {};
+        const phones: Record<string, string> = {};
         for (const c of json.companies ?? []) {
           const id = String(c.id || "").trim();
           const name = String(c.name || "").trim();
+          const phone = String(c.phone || "").trim();
           if (id && name && !isLoadTestCompanyId(id)) map[id] = name;
+          if (id && phone.length >= 7) phones[id] = phone;
         }
         if (cancelled) return;
         apiNameById = map;
+        apiPhoneById = phones;
         rebuild();
       } catch (err) {
         console.warn("[Companies] /api/companies name lookup failed:", err);

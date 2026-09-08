@@ -17,6 +17,7 @@ import { useAuth } from "@/context/AuthContext";
 import { cancelBookingOnServer } from "@/lib/bookingApi";
 import { rtdb } from "@/lib/firebase";
 import { FALLBACK_TZ } from "@/lib/timezone";
+import { bookingTimeCancelRules } from "@/lib/cancelFairness";
 import { formatCurrency } from "@/lib/fareCalculator";
 import { useColors } from "@/hooks/useColors";
 
@@ -79,7 +80,7 @@ function timeUntil(ts: number): string {
 
 export default function ScheduledScreen() {
   const colors = useColors();
-  const { firebaseUser, isLoading, updateWallet } = useAuth();
+  const { firebaseUser, isLoading } = useAuth();
   const insets = useSafeAreaInsets();
   const [jobs, setJobs] = useState<ScheduledJob[]>([]);
   const [loading, setLoading] = useState(true);
@@ -135,13 +136,10 @@ export default function ScheduledScreen() {
     if (!firebaseUser?.uid) return;
     setCancelling(job.id);
     const cid = job.CompanyId ?? job.companyId ?? "";
-    const payment = (job.PaymentMethod ?? job.paymentMethod ?? "cash").toLowerCase();
-    const fare = job.EstimatedFare ?? job.estimatedFare ?? 0;
-    const willRefund = (payment === "card" || payment === "wallet" || payment === "gift_card") && fare > 0;
     try {
       if (!cid) throw new Error("Missing company for this booking");
       const cancelledAt = new Date().toISOString();
-      await cancelBookingOnServer({
+      const apiResult = await cancelBookingOnServer({
         companyId: cid,
         jobId: job.id,
         passengerUid: firebaseUser.uid,
@@ -156,9 +154,10 @@ export default function ScheduledScreen() {
           CancelReason: "passenger_scheduled_cancel",
         },
       });
-      if (willRefund) {
-        updateWallet(fare).catch(() => {});
-      }
+      const msg = String(
+        (apiResult && (apiResult.passengerMessage || (apiResult.fairness as Record<string, unknown> | undefined)?.passengerMessage)) || "",
+      );
+      if (msg) Alert.alert("Booking cancelled", msg);
     } catch (e) {
       Alert.alert("Cancel failed", (e as Error).message || "Try again.");
     } finally {
@@ -169,18 +168,8 @@ export default function ScheduledScreen() {
   const cancelJob = (job: ScheduledJob) => {
     if (!firebaseUser?.uid) return;
     const payment = (job.PaymentMethod ?? job.paymentMethod ?? "cash").toLowerCase();
-    const fare = job.EstimatedFare ?? job.estimatedFare ?? 0;
-    const willRefund = (payment === "card" || payment === "wallet" || payment === "gift_card") && fare > 0;
     const isTM = String(job.PaymentMethod ?? job.paymentMethod ?? "").toLowerCase().includes("tm");
-
-    let detail: string;
-    if (isTM) {
-      detail = "Your TM booking will be cancelled. No charges apply to you or the council.";
-    } else if (willRefund) {
-      detail = `${formatCurrency(fare)} will be refunded to your wallet.`;
-    } else {
-      detail = "Your booking will be cancelled at no charge.";
-    }
+    const detail = bookingTimeCancelRules(payment, isTM);
 
     Alert.alert("Cancel Ride?", detail, [
       { text: "Keep Booking", style: "cancel" },

@@ -31,6 +31,7 @@ import {
   cancelBookingOnServer,
   editBookingOnServer,
 } from "@/lib/bookingApi";
+import { computeCancelFairness } from "@/lib/cancelFairness";
 import {
   clearActiveRideSnapshot,
   loadActiveRideSnapshot,
@@ -435,9 +436,9 @@ function enrichVehicleFromFleet(
 
 export interface CancelPolicy {
   /**
-   * "refund"  — fare credited to wallet (card/wallet/gift_card under 70%)
-   * "charge"  — real charge applies; account types always; card/wallet/gift_card past 70%
-   * "free"    — cash always; account types with no driver yet
+   * "refund"  — fare credited to wallet
+   * "charge"  — full or partial charge
+   * "free"    — cash / no charge
    * "locked"  — cancellation blocked (arrived / in_progress / no_show)
    */
   outcome: "refund" | "charge" | "free" | "locked";
@@ -447,51 +448,19 @@ export interface CancelPolicy {
 }
 
 /**
- * Pure function — compute what happens if the passenger cancels right now.
- *
- * Single rule: 70% driver distance to pickup (no time window).
- *
- * Cash → always free, any distance.
- * Card / wallet / gift_card:
- *   under 70% → "refund" (fare credited to wallet, NOT returned to card)
- *   over  70% → "charge" (full fare retained / Stripe captured)
- * Account / business_account / ACC:
- *   driver assigned → "charge" (invoiced) regardless of distance
- *   no driver yet   → "free"
- *
- * TM: council NEVER charged. Only passenger co-payment is at stake.
- *   Cash TM → always free.
- *   Card/wallet/gift_card TM: under 70% → wallet credit; over 70% → charge passenger %.
- *   Account/ACC/business_account TM: always charge passenger % (never council %).
- *
- * No-show (driver waited 5 min at pickup): handled server-side; app receives "no_show" status.
- * Same charge rules as "over 70%" apply — server processes payment, app shows notification.
+ * Preview only — Dispatch applies the real money on /api/cancel.
+ * 3-minute grace is not implemented. Missing GPS after assignment is never free.
  */
 export function computeCancelPolicy(
   status: RideStatus,
   payment: PaymentMethodRide,
   fare: number,
-  acceptedAt: number | undefined,   // kept for API compat but no longer used for timing
+  acceptedAt: number | undefined,
   driverDistancePct: number,
   isTM = false,
   tmPassengerAmount?: number | null,
+  gpsUnknown = false,
 ): CancelPolicy {
-  const fmtFare = formatCurrency(fare);
-  const fmtPassAmt = tmPassengerAmount ? formatCurrency(tmPassengerAmount) : fmtFare;
-  const pct = Math.round(driverDistancePct * 100);
-
-  const isCash       = payment === "cash";
-  const isCardWallet = payment === "card" || payment === "wallet" || payment === "gift_card";
-
-  // ── Locked states ────────────────────────────────────────────────────────
-  if (status === "arrived" || status === "in_progress" || status === "no_show") {
-    return {
-      outcome: "locked",
-      title: "Cannot Cancel",
-      detail: "The driver has arrived — cancellation is not available at this stage.",
-      canCancel: false,
-    };
-  }
   if (status === "cancel_requested") {
     return {
       outcome: "locked",
@@ -504,99 +473,27 @@ export function computeCancelPolicy(
     return {
       outcome: "locked",
       title: "Booking Cancelled",
-      detail: "This booking was cancelled by the operator.",
+      detail: "This booking was cancelled.",
       canCancel: false,
     };
   }
-
-  // ── No driver yet ────────────────────────────────────────────────────────
-  if (status === "searching" || status === "scheduled") {
-    if (isCardWallet) {
-      return {
-        outcome: "refund",
-        title: "Cancel Ride?",
-        detail: `No driver assigned yet — your ${isTM ? fmtPassAmt : fmtFare} will be credited to your wallet.`,
-        canCancel: true,
-      };
-    }
-    return {
-      outcome: "free",
-      title: "Cancel Ride?",
-      detail: "No driver assigned yet — your booking will be cancelled at no charge.",
-      canCancel: true,
-    };
-  }
-
-  // ── Driver assigned — cash is always free ────────────────────────────────
-  if (isCash) {
-    return {
-      outcome: "free",
-      title: "Cancel Ride?",
-      detail: "Cash booking — cancelled at no charge. Your driver will be notified.",
-      canCancel: true,
-    };
-  }
-
-  // ── TM rides (council never charged) ─────────────────────────────────────
-  if (isTM) {
-    if (driverDistancePct < 0.7) {
-      if (isCardWallet) {
-        return {
-          outcome: "refund",
-          title: "Cancel TM Ride?",
-          detail: `Driver is ${pct}% of the way — within free-cancel distance. Your passenger co-payment of ${fmtPassAmt} will be credited to your wallet. No council charge.`,
-          canCancel: true,
-        };
-      }
-      return {
-        outcome: "charge",
-        title: "TM Co-payment Applies",
-        detail: `A driver has been dispatched. Your passenger co-payment of ${fmtPassAmt} will be charged to your account. No council charge.`,
-        canCancel: true,
-      };
-    }
-    // Over 70%
-    if (isCardWallet) {
-      return {
-        outcome: "charge",
-        title: "TM Co-payment Applies",
-        detail: `Driver is ${pct}% of the way. Your passenger co-payment of ${fmtPassAmt} will be charged. No council charge.`,
-        canCancel: true,
-      };
-    }
-    return {
-      outcome: "charge",
-      title: "TM Co-payment Applies",
-      detail: `Driver is ${pct}% of the way. Your passenger co-payment of ${fmtPassAmt} will be charged to your account. No council charge.`,
-      canCancel: true,
-    };
-  }
-
-  // ── Standard (non-TM) rides ──────────────────────────────────────────────
-  if (driverDistancePct < 0.7) {
-    if (isCardWallet) {
-      return {
-        outcome: "refund",
-        title: "Cancel Ride?",
-        detail: `Driver is ${pct}% of the way — within free-cancel distance. Your ${fmtFare} fare will be credited to your wallet for your next ride (no refund to original payment).`,
-        canCancel: true,
-      };
-    }
-    // Account / business_account / ACC — charged even under 70%
-    return {
-      outcome: "charge",
-      title: "Cancellation Fee Applies",
-      detail: `A driver has been dispatched to you. Your ${fmtFare} fare will be charged to your account.`,
-      canCancel: true,
-    };
-  }
-
-  // Over 70% — full charge for all non-cash
+  const f = computeCancelFairness({
+    status,
+    paymentMethod: payment,
+    fare,
+    isTM,
+    tmPassengerAmount,
+    remainderPayment: payment,
+    progressPct: gpsUnknown ? null : driverDistancePct,
+    gpsUnknown,
+    forSelfServePreview: true,
+  });
+  const outcome = f.outcome === "partial_charge" ? "charge" : f.outcome;
   return {
-    outcome: "charge",
-    title: "Cancellation Fee Applies",
-    detail: `Driver is ${pct}% of the way — your ${fmtFare} fare will be charged in full. The driver is already on the way and will be paid.`,
-    canCancel: true,
+    outcome,
+    title: f.title,
+    detail: f.detail,
+    canCancel: f.canSelfServe,
   };
 }
 
@@ -643,7 +540,7 @@ function readRecallFromSnap(d: Record<string, unknown>): {
 
 function RideProviderInner({ children }: { children: React.ReactNode }) {
   const { notify } = useNotification();
-  const { updateWallet, user: authUser } = useAuth();
+  const { user: authUser } = useAuth();
   const { ensureTripInHistory } = useTripHistory();
   const [activeRide, setActiveRide] = useState<ActiveRide | null>(null);
   const [driverLocation, setDriverLocation] = useState<LatLng | null>(null);
@@ -1874,41 +1771,33 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
           pendingCancelRef.current = null;
 
           if (pending) {
-            // Passenger-initiated cancel confirmed by backend — apply wallet logic based on stored outcome
+            const msg = String(
+              (d as Record<string, unknown>).cancelPassengerMessage ||
+              ((d as Record<string, unknown>).cancelFairness as Record<string, unknown> | undefined)?.passengerMessage ||
+              "",
+            );
             if (pending.outcome === "refund") {
-              // Credit the relevant amount to wallet (full fare for regular; passenger % for TM)
-              const creditAmt = pending.isTM && pending.tmPassengerAmount
-                ? pending.tmPassengerAmount
-                : pending.fare;
-              updateWallet(creditAmt).catch(() => {});
               setTimeout(() => notify(
-                pending.isTM ? "TM Co-payment Credited" : "Fare Credited to Wallet",
-                `${formatCurrency(creditAmt)} added to your wallet for your next ride.${pending.isTM ? " The council is not charged." : ""}`,
+                pending.isTM ? "TM co-payment credited" : "Fare credited to wallet",
+                msg || `${formatCurrency(pending.isTM && pending.tmPassengerAmount ? pending.tmPassengerAmount : pending.fare)} added to your wallet.`,
                 "success",
               ), 0);
             } else if (pending.outcome === "charge") {
-              const chargeAmt = pending.isTM && pending.tmPassengerAmount
-                ? pending.tmPassengerAmount
-                : pending.fare;
               setTimeout(() => notify(
-                pending.isTM ? "TM Co-payment Charged" : "Cancellation Fee Charged",
-                `${formatCurrency(chargeAmt)} has been charged.${pending.isTM ? " No council charge applies." : " The driver has been paid."}`,
+                pending.isTM ? "TM co-payment charged" : "Cancellation charge",
+                msg || `${formatCurrency(pending.isTM && pending.tmPassengerAmount ? pending.tmPassengerAmount : pending.fare)} has been charged.`,
                 "warning",
               ), 0);
             } else {
-              // "free" — cash or no-driver-yet
-              setTimeout(() => notify("Ride Cancelled", "Your booking has been cancelled at no charge.", "info"), 0);
+              setTimeout(() => notify("Ride cancelled", msg || "Your booking has been cancelled at no charge.", "info"), 0);
             }
-            // Clear ride now that backend has confirmed
             clearRide();
           } else {
-            // Cancellation was NOT initiated by the passenger (operator/dispatcher cancelled).
-            // Clear Active Ride so Home does not keep showing a dead banner.
-            setTimeout(() => notify(
-              "Booking Cancelled",
-              "Your booking was cancelled by the operator.",
-              "warning",
-            ), 0);
+            const opMsg = String(
+              (d as Record<string, unknown>).cancelPassengerMessage ||
+              "Dispatch cancelled this booking.",
+            );
+            setTimeout(() => notify("Booking cancelled", opMsg, "warning"), 0);
             clearRide();
           }
         } else if (mapped === "no_show") {
@@ -2088,47 +1977,37 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       ...(activeRide.isTM ? { CouncilCharged: false, councilCharged: false } : {}),
     };
 
-    const passengerUid = auth.currentUser?.uid;
     const rideSnap = activeRide;
     let wrote = false;
+    let serverMessage = "";
     try {
-      await cancelBookingOnServer({
+      const apiResult = await cancelBookingOnServer({
         companyId,
         jobId,
         cancelFields: rtdbCancelFields as Record<string, unknown>,
       });
       wrote = true;
+      serverMessage = String(
+        (apiResult && (apiResult.passengerMessage || (apiResult.fairness as Record<string, unknown> | undefined)?.passengerMessage)) || "",
+      );
     } catch (apiErr) {
-      console.warn("[BookingAPI] Cancel API failed — RTDB fallback:", (apiErr as Error).message);
-      try {
-        await Promise.all([
-          rtdbUpdate(rtdbRef(rtdb, `pendingjobs/${companyId}/${jobId}`), rtdbCancelFields),
-          rtdbUpdate(rtdbRef(rtdb, `allbookings/${companyId}/${jobId}`), rtdbCancelFields),
-          passengerUid
-            ? rtdbUpdate(rtdbRef(rtdb, `Passengerjobs/${passengerUid}/${jobId}`), rtdbCancelFields)
-            : Promise.resolve(),
-        ]);
-        console.warn("[BookingAPI] Cancel RTDB fallback succeeded");
-        wrote = true;
-      } catch (rtdbErr) {
-        console.warn("[BookingAPI] Cancel RTDB fallback failed:", rtdbErr);
-        pendingCancelRef.current = null;
-        setActiveRide((prev) => {
-          if (!prev || prev.firestoreId !== jobId) return prev;
-          if (prev.status !== "cancel_requested") return prev;
-          return { ...prev, status: "confirmed" };
-        });
-        notify(
-          "Cancel failed",
-          (apiErr as Error).message || "Could not reach dispatch — try again.",
-          "error",
-        );
-        patchDiag({
-          phase: "cancel",
-          decision: `cancel FAILED for ${jobId}: ${(apiErr as Error).message}`,
-        });
-        return;
-      }
+      console.warn("[BookingAPI] Cancel API failed — not falling back to RTDB (driver must be notified via dispatch):", (apiErr as Error).message);
+      pendingCancelRef.current = null;
+      setActiveRide((prev) => {
+        if (!prev || prev.firestoreId !== jobId) return prev;
+        if (prev.status !== "cancel_requested") return prev;
+        return { ...prev, status: "confirmed" };
+      });
+      notify(
+        "Cancel failed",
+        (apiErr as Error).message || "Could not reach dispatch — try again.",
+        "error",
+      );
+      patchDiag({
+        phase: "cancel",
+        decision: `cancel FAILED for ${jobId}: ${(apiErr as Error).message}`,
+      });
+      return;
     }
 
     // Don't wait for RTDB echo — home banner keys off activeRide truthiness, and the
@@ -2136,26 +2015,18 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
     if (wrote) {
       const pending = pendingCancelRef.current;
       pendingCancelRef.current = null;
-      if (pending?.outcome === "refund") {
-        const creditAmt =
-          pending.isTM && pending.tmPassengerAmount ? pending.tmPassengerAmount : pending.fare;
-        updateWallet(creditAmt).catch(() => {});
-        notify(
-          pending.isTM ? "TM Co-payment Credited" : "Fare Credited to Wallet",
-          `${formatCurrency(creditAmt)} added to your wallet for your next ride.${pending.isTM ? " The council is not charged." : ""}`,
-          "success",
-        );
-      } else if (pending?.outcome === "charge") {
-        const chargeAmt =
-          pending.isTM && pending.tmPassengerAmount ? pending.tmPassengerAmount : pending.fare;
-        notify(
-          pending.isTM ? "TM Co-payment Charged" : "Cancellation Fee Charged",
-          `${formatCurrency(chargeAmt)} has been charged.${pending.isTM ? " No council charge applies." : " The driver has been paid."}`,
-          "warning",
-        );
-      } else {
-        notify("Ride Cancelled", "Your booking has been cancelled.", "info");
-      }
+      const msg = serverMessage || (
+        pending?.outcome === "refund"
+          ? `${formatCurrency(pending.isTM && pending.tmPassengerAmount ? pending.tmPassengerAmount : pending.fare)} has been credited to your BookaWaka wallet.`
+          : pending?.outcome === "charge"
+            ? `${formatCurrency(pending.isTM && pending.tmPassengerAmount ? pending.tmPassengerAmount : pending.fare)} has been charged.`
+            : "Your booking has been cancelled."
+      );
+      notify(
+        pending?.outcome === "refund" ? "Fare credited to wallet" : pending?.outcome === "charge" ? "Cancellation charge" : "Ride cancelled",
+        msg,
+        pending?.outcome === "charge" ? "warning" : pending?.outcome === "refund" ? "success" : "info",
+      );
       void ensureTripInHistory(
         historyPayloadFromRide({ ...rideSnap, status: "cancelled", firestoreId: jobId }),
       );

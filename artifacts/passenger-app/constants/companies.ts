@@ -43,6 +43,7 @@ export interface Company {
    *  Stored in companySettings/{cid}/timezone in Firebase.
    *  All date/time display for this company's rides uses this timezone. */
   timezone?: string;
+  phone?: string;
 }
 
 export const VEHICLE_LABELS: Record<VehicleType, string> = {

@@ -94,9 +94,9 @@ export async function cancelBookingOnServer(params: {
   cancelFields: Record<string, unknown>;
   passengerUid?: string;
   mode?: "abort" | "intentional";
-}): Promise<void> {
+}): Promise<Record<string, unknown>> {
   const idToken = await getIdToken();
-  await apiPost(
+  return apiPost(
     "/cancel",
     {
       companyId: params.companyId,

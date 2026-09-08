@@ -14,6 +14,7 @@ import {
   StyleSheet,
   Text,
   View,
+  Linking,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { PlacesAutocomplete } from "@/components/PlacesAutocomplete";
@@ -22,6 +23,7 @@ import { useRide, SearchPhase, computeCancelPolicy, haversineKm } from "@/contex
 import { useNotification } from "@/context/NotificationContext";
 import { useCompanies } from "@/context/CompaniesContext";
 import { formatCurrency } from "@/lib/fareCalculator";
+import { SUPPORT_EMAIL } from "@/lib/cancelFairness";
 import { useColors } from "@/hooks/useColors";
 import { PlaceDetail } from "@/lib/googlePlaces";
 import { resolvePlacesBias, INVERCARGILL_PLACES_BIAS } from "@/lib/placesBias";
@@ -161,8 +163,8 @@ export default function ActiveRideScreen() {
     if (activeRide?.status === "completed") setShowCompleteModal(true);
   }, [activeRide?.status]);
 
-  // Refresh cancel policy every 10 s while driver is en-route so the grace
-  // countdown stays accurate without a busy re-render loop.
+  // Refresh cancel policy every 10 s while driver is en-route so distance
+  // tiers (50% / 100%) stay current. 3-minute grace is not implemented.
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const s = activeRide?.status;
@@ -173,13 +175,13 @@ export default function ActiveRideScreen() {
 
   // What fraction of the way to pickup has the driver already covered?
   // 0 = just accepted, 1 = arrived at pickup.
+  const gpsUnknown = !driverLocation || !activeRide?.driverStartDistanceToPickup || activeRide.driverStartDistanceToPickup <= 0;
   const driverDistancePct = useMemo(() => {
-    if (!driverLocation || !activeRide?.driverStartDistanceToPickup || activeRide.driverStartDistanceToPickup <= 0) return 0;
+    if (gpsUnknown || !driverLocation || !activeRide?.driverStartDistanceToPickup) return 0;
     const currentDist = haversineKm(driverLocation, activeRide.pickup.location);
     return Math.min(1, Math.max(0, 1 - currentDist / activeRide.driverStartDistanceToPickup));
-  }, [driverLocation, activeRide?.driverStartDistanceToPickup, activeRide?.pickup.location]);
+  }, [driverLocation, activeRide?.driverStartDistanceToPickup, activeRide?.pickup.location, gpsUnknown]);
 
-  // Live cancellation policy — what would happen if the passenger cancelled RIGHT NOW.
   const cancelPolicy = useMemo(() => {
     if (!activeRide) return null;
     return computeCancelPolicy(
@@ -190,9 +192,10 @@ export default function ActiveRideScreen() {
       driverDistancePct,
       activeRide.isTM,
       activeRide.tmPassengerAmount,
+      gpsUnknown && (activeRide.status === "confirmed" || activeRide.status === "on_the_way"),
     );
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeRide?.status, activeRide?.payment, activeRide?.fare, activeRide?.acceptedAt, activeRide?.isTM, activeRide?.tmPassengerAmount, driverDistancePct, now]);
+  }, [activeRide?.status, activeRide?.payment, activeRide?.fare, activeRide?.acceptedAt, activeRide?.isTM, activeRide?.tmPassengerAmount, driverDistancePct, now, gpsUnknown]);
 
   if (!activeRide) {
     const booking = String(params.booking || "").trim();
@@ -573,8 +576,8 @@ export default function ActiveRideScreen() {
             />
             <Text style={[styles.cancelPolicyText, { color: cancelPolicy.outcome === "charge" ? colors.warning : colors.success }]}>
               {cancelPolicy.outcome === "charge"
-                ? "Cancellation fee applies if you cancel now"
-                : "Free cancel — 3 min grace & driver < 70% to you"}
+                ? cancelPolicy.detail
+                : cancelPolicy.detail}
             </Text>
           </View>
         )}
@@ -677,19 +680,11 @@ export default function ActiveRideScreen() {
             <Text style={[styles.confirmSub, { color: colors.mutedForeground }]}>
               {cancelPolicy?.detail ?? "Are you sure you want to cancel?"}
             </Text>
-            {cancelPolicy?.outcome === "charge" && activeRide?.isTM && (
-              <View style={[styles.chargeBanner, { backgroundColor: colors.primary + "15", borderColor: colors.primary + "40" }]}>
-                <Feather name="rotate-ccw" size={14} color={colors.primary} />
-                <Text style={[styles.chargeBannerText, { color: colors.primary }]}>
-                  Co-payment credited to your wallet — council not charged
-                </Text>
-              </View>
-            )}
-            {cancelPolicy?.outcome === "charge" && !activeRide?.isTM && (
+            {cancelPolicy?.outcome === "charge" && (
               <View style={[styles.chargeBanner, { backgroundColor: colors.warning + "15", borderColor: colors.warning + "40" }]}>
                 <Feather name="credit-card" size={14} color={colors.warning} />
                 <Text style={[styles.chargeBannerText, { color: colors.warning }]}>
-                  Full fare will be charged — no refund
+                  {cancelPolicy.detail}
                 </Text>
               </View>
             )}
@@ -697,7 +692,7 @@ export default function ActiveRideScreen() {
               <View style={[styles.chargeBanner, { backgroundColor: colors.success + "15", borderColor: colors.success + "40" }]}>
                 <Feather name="check-circle" size={14} color={colors.success} />
                 <Text style={[styles.chargeBannerText, { color: colors.success }]}>
-                  Fare refunded to your wallet
+                  Fare credited to your wallet — not refunded to your card
                 </Text>
               </View>
             )}
@@ -709,6 +704,23 @@ export default function ActiveRideScreen() {
                 </Text>
               </View>
             )}
+            {(() => {
+              const phone = companies.find((c) => c.id === activeRide.companyId)?.phone;
+              if (phone) {
+                return (
+                  <Pressable onPress={() => Linking.openURL(`tel:${phone}`)}>
+                    <Text style={[styles.confirmSub, { color: colors.primary, marginTop: 4 }]}>
+                      Call company {phone}
+                    </Text>
+                  </Pressable>
+                );
+              }
+              return (
+                <Text style={[styles.confirmSub, { color: colors.mutedForeground, marginTop: 4 }]}>
+                  Need help? Email {SUPPORT_EMAIL}
+                </Text>
+              );
+            })()}
             <View style={styles.confirmBtns}>
               <Pressable
                 onPress={() => setCancelConfirm(false)}

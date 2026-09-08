@@ -24,6 +24,7 @@ import { TMCardScanner } from "@/components/TMCardScanner";
 import { Company, VehicleType, VehicleTypeOption, VEHICLES, VEHICLE_CAPACITY, VEHICLE_LABELS, VEHICLE_OPTION_LABELS } from "@/constants/companies";
 import { useCompanies, getVehicleTariff, isLoadTestCompanyId } from "@/context/CompaniesContext";
 import { useAuth } from "@/context/AuthContext";
+import { bookingTimeCancelRules, SUPPORT_EMAIL } from "@/lib/cancelFairness";
 import { useNotification } from "@/context/NotificationContext";
 import { useRide, Stop, PaymentMethodRide, TMPassenger } from "@/context/RideContext";
 import { ref, onValue, get, set, update } from "firebase/database";
@@ -96,6 +97,7 @@ export default function BookingScreen() {
   const [route, setRoute] = useState<RouteResult | null>(null);
   const [loadingRoute, setLoadingRoute] = useState(false);
   const [payment, setPayment] = useState<PaymentMethodRide>("card");
+  const [cardOnly, setCardOnly] = useState(false);
   const [promo, setPromo] = useState("");
   const [discount, setDiscount] = useState(0);
   const [promoError, setPromoError] = useState("");
@@ -198,6 +200,18 @@ export default function BookingScreen() {
       setGiftCardError(null);
     }
   }, [payment]);
+
+  useEffect(() => {
+    const uid = firebaseUser?.uid || user?.id;
+    if (!uid) return;
+    const unsub = onValue(ref(rtdb, `users/${uid}/cardOnly`), (snap) => {
+      if (snap.exists() && snap.val() === true) setCardOnly(true);
+    });
+    const unsub2 = onValue(ref(rtdb, `passengerCancelAbuse/${uid}/cardOnly`), (snap) => {
+      if (snap.exists() && snap.val() === true) setCardOnly(true);
+    });
+    return () => { unsub(); unsub2(); };
+  }, [firebaseUser?.uid, user?.id]);
 
   // Read URL params — used when returning from "no drivers" prompt or editing a scheduled ride
   const params = useLocalSearchParams<{ initialScheduled?: string }>();
@@ -1052,8 +1066,8 @@ export default function BookingScreen() {
 
   const PAYMENT_OPTIONS: { id: PaymentMethodRide; label: string; icon: keyof typeof Feather.glyphMap }[] = isTM
     ? [
-        // TM remainder: Cash always available regardless of company/platform cash toggle
-        { id: "cash", label: "Cash", icon: "dollar-sign" },
+        // TM remainder: Cash unless this passenger is card-only after cash-cancel abuse.
+        ...(cardOnly ? [] : [{ id: "cash" as PaymentMethodRide, label: "Cash", icon: "dollar-sign" as keyof typeof Feather.glyphMap }]),
         { id: "card", label: "Card", icon: "credit-card" },
         { id: "account", label: "Account", icon: "briefcase" },
         ...(showACC ? [{ id: "acc" as PaymentMethodRide, label: "ACC", icon: "shield" as keyof typeof Feather.glyphMap }] : []),
@@ -1061,7 +1075,7 @@ export default function BookingScreen() {
       ]
     : [
         // Regular (non-TM): Cash only when platform cash toggle allows it
-        ...(platformCashEnabled
+        ...(platformCashEnabled && !cardOnly
           ? [{ id: "cash" as PaymentMethodRide, label: "Cash", icon: "dollar-sign" as keyof typeof Feather.glyphMap }]
           : []),
         { id: "card", label: "Card", icon: "credit-card" },
@@ -1879,8 +1893,14 @@ export default function BookingScreen() {
                 </Pressable>
               ))}
             </View>
-
-            {/* Business Account inputs */}
+            {cardOnly && (
+              <Text style={[styles.tmPaymentNote, { color: colors.warning }]}>
+                This account is card-only after repeated cash cancellations.
+              </Text>
+            )}
+            <Text style={[styles.tmPaymentNote, { color: colors.mutedForeground }]}>
+              {bookingTimeCancelRules(payment, isTM)}
+            </Text>
             {payment === "business_account" && (
               <View style={[styles.accountInputCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
                 <View style={styles.accountInputHeader}>
