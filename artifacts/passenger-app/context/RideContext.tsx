@@ -46,6 +46,11 @@ import {
   pickAuthoritativeStatus,
 } from "@/lib/passengerJobRecover";
 import {
+  loadMergedPassengerJobs,
+  mergePassengerJobTrees,
+  resolvePassengerJobTreeKeys,
+} from "@/lib/passengerJobTrees";
+import {
   driverOf,
   payOf,
   statusOf,
@@ -2637,15 +2642,18 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
           return;
         }
 
-        const treeSnap = await rtdbGet(rtdbRef(rtdb, `Passengerjobs/${uid}`)).catch(() => null);
-        if (!treeSnap?.exists?.() || cancelled) {
-          finalDecision = treeSnap?.exists?.()
+        const tree = await loadMergedPassengerJobs({
+          uid,
+          phone: authUser?.phone || auth.currentUser?.phoneNumber,
+          email: authUser?.email || auth.currentUser?.email,
+        });
+        const entries = Object.entries(tree || {}).filter(([, v]) => v && typeof v === "object");
+        if (!entries.length || cancelled) {
+          finalDecision = cancelled
             ? "hydrate cancelled"
             : "Passengerjobs tree missing/empty — nothing to recover";
           return;
         }
-        const tree = treeSnap.val() as Record<string, Record<string, unknown>>;
-        const entries = Object.entries(tree || {}).filter(([, v]) => v && typeof v === "object");
         entries.sort((a, b) => {
           const ta = Number(a[1].CreatedAt ?? a[1].createdAt ?? 0);
           const tb = Number(b[1].CreatedAt ?? b[1].createdAt ?? 0);
@@ -2765,7 +2773,7 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [authUser?.uid, ensureTripInHistory, patchDiag]);
+  }, [authUser?.uid, authUser?.phone, authUser?.email, ensureTripInHistory, patchDiag]);
 
   // After Stripe "Go back to app" / AuthSession hang: restore ride, then verify (with timeout).
   // Resume first — a hung verify must not block Active Ride when cold hydrate already has data.
@@ -2816,17 +2824,24 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hydrateReady]);
 
-  // Mid-session: if Active Ride is empty, try resume from newest Passengerjobs.
+  // Mid-session: if Active Ride is empty, try resume from newest Passengerjobs (uid + aliases).
   useEffect(() => {
     const uid = auth.currentUser?.uid;
     if (!uid || !hydrateReady) return;
-    const treeRef = rtdbRef(rtdb, `Passengerjobs/${uid}`);
-    const unsub = rtdbOnValue(treeRef, (snap) => {
-      void (async () => {
-        if (!snap.exists()) return;
-        if (activeRideRef.current) return; // live listeners own updates while a ride is attached
-        const tree = snap.val() as Record<string, Record<string, unknown>>;
-        const entries = Object.entries(tree || {}).filter(([, v]) => v && typeof v === "object");
+    let cancelled = false;
+    const unsubs: Array<() => void> = [];
+    void (async () => {
+      const keys = await resolvePassengerJobTreeKeys({
+        uid,
+        phone: authUser?.phone || auth.currentUser?.phoneNumber,
+        email: authUser?.email || auth.currentUser?.email,
+      });
+      if (cancelled) return;
+      const trees: Record<string, Record<string, Record<string, unknown>>> = {};
+      const consider = async () => {
+        if (activeRideRef.current) return;
+        const merged = mergePassengerJobTrees(Object.values(trees));
+        const entries = Object.entries(merged || {}).filter(([, v]) => v && typeof v === "object");
         entries.sort((a, b) => {
           const ta = Number(a[1].CreatedAt ?? a[1].createdAt ?? 0);
           const tb = Number(b[1].CreatedAt ?? b[1].createdAt ?? 0);
@@ -2838,10 +2853,24 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
           const ok = await resumeActiveRide(companyId, jobId);
           if (ok) break;
         }
-      })();
-    });
-    return () => unsub();
-  }, [authUser?.uid, hydrateReady]);
+      };
+      for (const key of keys) {
+        const treeRef = rtdbRef(rtdb, `Passengerjobs/${key}`);
+        unsubs.push(
+          rtdbOnValue(treeRef, (snap) => {
+            trees[key] = snap.exists()
+              ? (snap.val() as Record<string, Record<string, unknown>>)
+              : {};
+            void consider();
+          }),
+        );
+      }
+    })();
+    return () => {
+      cancelled = true;
+      unsubs.forEach((u) => u());
+    };
+  }, [authUser?.uid, authUser?.phone, authUser?.email, hydrateReady]);
 
   // Re-attach RTDB listeners after rehydrate (or if startRide listeners were lost).
   useEffect(() => {

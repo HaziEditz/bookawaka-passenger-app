@@ -20,13 +20,19 @@ import { FALLBACK_TZ } from "@/lib/timezone";
 import { bookingTimeCancelRules } from "@/lib/cancelFairness";
 import { formatCurrency } from "@/lib/fareCalculator";
 import { useColors } from "@/hooks/useColors";
+import { isScheduledTabVisible, jobDropoffLabel, jobPickupLabel } from "@/lib/scheduledBookingRules";
+import { mergePassengerJobTrees, resolvePassengerJobTreeKeys } from "@/lib/passengerJobTrees";
 
 interface ScheduledJob {
   id: string;
   PickupAddress?: string;
   pickupAddress?: string;
+  PickAddress?: string;
+  pickAddress?: string;
   DropoffAddress?: string;
   dropoffAddress?: string;
+  DropAddress?: string;
+  dropAddress?: string;
   VehicleType?: string;
   vehicleType?: string;
   EstimatedFare?: number;
@@ -80,7 +86,7 @@ function timeUntil(ts: number): string {
 
 export default function ScheduledScreen() {
   const colors = useColors();
-  const { firebaseUser, isLoading } = useAuth();
+  const { firebaseUser, user, isLoading } = useAuth();
   const insets = useSafeAreaInsets();
   const [jobs, setJobs] = useState<ScheduledJob[]>([]);
   const [loading, setLoading] = useState(true);
@@ -93,31 +99,23 @@ export default function ScheduledScreen() {
       return;
     }
     const uid = firebaseUser.uid;
-    const unsubscribe = onValue(
-      ref(rtdb, `Passengerjobs/${uid}`),
-      (snap) => {
-        if (!snap.exists()) {
-          setJobs([]);
-          setLoading(false);
-          return;
-        }
-        const raw = snap.val() as Record<string, any>;
+    let cancelled = false;
+    const unsubs: Array<() => void> = [];
+    void (async () => {
+      const keys = await resolvePassengerJobTreeKeys({
+        uid,
+        phone: user?.phone || firebaseUser.phoneNumber,
+        email: user?.email || firebaseUser.email,
+      });
+      if (cancelled) return;
+      const trees: Record<string, Record<string, Record<string, unknown>>> = {};
+      const emit = () => {
+        const merged = mergePassengerJobTrees(Object.values(trees));
         const list: ScheduledJob[] = [];
-        for (const [id, val] of Object.entries(raw)) {
+        for (const [id, val] of Object.entries(merged)) {
           if (!val || typeof val !== "object") continue;
-          const status = String(val.Status ?? val.status ?? "").toLowerCase().replace(/[_\s]/g, "");
-          const schedMs = Number(val.ScheduledFor ?? val.scheduledFor ?? val.ScheduledForMs ?? 0);
-          const hasFutureSched = Number.isFinite(schedMs) && schedMs > Date.now();
-          // Show confirmed Scheduled + in-flight card holds (PendingPayment) for later trips.
-          const visible =
-            status === "scheduled" ||
-            (hasFutureSched && (status === "pendingpayment" || status === "paymentpending"));
-          if (!visible) continue;
-          // Skip cancelled / completed even if ScheduledFor remains.
-          if (status === "cancelled" || status === "canceled" || status === "completed" || status === "closed") {
-            continue;
-          }
-          list.push({ id, ...val });
+          if (!isScheduledTabVisible(val)) continue;
+          list.push({ id, ...(val as Omit<ScheduledJob, "id">) });
         }
         list.sort((a, b) => {
           const ta = a.ScheduledFor ?? a.scheduledFor ?? 0;
@@ -126,11 +124,28 @@ export default function ScheduledScreen() {
         });
         setJobs(list);
         setLoading(false);
-      },
-      () => setLoading(false),
-    );
-    return () => unsubscribe();
-  }, [firebaseUser?.uid]);
+      };
+      for (const key of keys) {
+        const unsubscribe = onValue(
+          ref(rtdb, `Passengerjobs/${key}`),
+          (snap) => {
+            trees[key] = snap.exists() ? (snap.val() as Record<string, Record<string, unknown>>) : {};
+            emit();
+          },
+          () => setLoading(false),
+        );
+        unsubs.push(unsubscribe);
+      }
+      if (keys.length === 0) {
+        setJobs([]);
+        setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      unsubs.forEach((u) => u());
+    };
+  }, [firebaseUser?.uid, firebaseUser?.phoneNumber, firebaseUser?.email, user?.phone, user?.email]);
 
   const doCancel = async (job: ScheduledJob) => {
     if (!firebaseUser?.uid) return;
@@ -272,8 +287,8 @@ export default function ScheduledScreen() {
         </View>
       ) : (
         jobs.map((job) => {
-          const pickup = job.PickupAddress ?? job.pickupAddress ?? "—";
-          const destination = job.DropoffAddress ?? job.dropoffAddress ?? "—";
+          const pickup = jobPickupLabel(job as unknown as Record<string, unknown>);
+          const destination = jobDropoffLabel(job as unknown as Record<string, unknown>);
           const vehicle = job.VehicleType ?? job.vehicleType ?? "Taxi";
           const fare = job.EstimatedFare ?? job.estimatedFare;
           const payment = job.PaymentMethod ?? job.paymentMethod ?? "cash";

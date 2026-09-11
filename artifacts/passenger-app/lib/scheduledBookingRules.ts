@@ -40,3 +40,19 @@ export function isScheduledTabVisible(job: {
     (hasFutureSched && (status === "pendingpayment" || status === "paymentpending"))
   );
 }
+
+export function jobPickupLabel(job: Record<string, unknown> | null | undefined): string {
+  if (!job) return "—";
+  const s = String(
+    job.PickupAddress ?? job.pickupAddress ?? job.PickAddress ?? job.pickAddress ?? "",
+  ).trim();
+  return s || "—";
+}
+
+export function jobDropoffLabel(job: Record<string, unknown> | null | undefined): string {
+  if (!job) return "—";
+  const s = String(
+    job.DropoffAddress ?? job.dropoffAddress ?? job.DropAddress ?? job.dropAddress ?? "",
+  ).trim();
+  return s || "—";
+}
