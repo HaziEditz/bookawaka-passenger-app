@@ -68,8 +68,11 @@ export function HistoryCard({
         <Feather name={SERVICE_ICONS[item.serviceType] ?? "circle"} size={20} color={serviceColor} />
       </View>
       <View style={styles.content}>
-        <Text style={[styles.title, { color: colors.foreground }]} numberOfLines={1}>
+        <Text style={[styles.title, { color: colors.foreground }]} numberOfLines={2}>
           {title}
+          {(item.stops || []).length
+            ? ` · ${(item.stops || []).length} stop${(item.stops || []).length === 1 ? "" : "s"}`
+            : ""}
         </Text>
         <Text style={[styles.date, { color: colors.mutedForeground }]}>{dateStr}</Text>
         <View style={styles.bottomRow}>

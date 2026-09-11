@@ -53,9 +53,12 @@ test('AuthSession dismiss continues verify (does not throw cancel)', () => {
   );
 });
 
-test('stripe-return deep-link route exists and redirects to active-ride', () => {
+test('stripe-return ASAP offers Home vs Trace; Later still goes to Schedule tab copy', () => {
   const src = load('app/stripe-return.tsx');
-  assert.match(src, /Redirect href="\/active-ride"/);
+  assert.match(src, /Trace trip/);
+  assert.match(src, /go Home and come back from Active Ride/);
+  assert.match(src, /check your Schedule tab to edit or cancel/);
+  assert.match(src, /Do not auto-open Active Ride/);
   const layout = load('app/_layout.tsx');
   assert.match(layout, /stripe-return/);
 });
@@ -67,6 +70,30 @@ test('completeRide clears activeRide before async writes', () => {
   assert.match(src, /normalizePaymentStatus/);
   assert.match(src, /enrichVehicleFromFleet/);
   assert.match(src, /markPaymentConfirmed/);
+});
+
+test('history detail and recover show extra stops; recover no longer hardcodes empty stops', () => {
+  const recover = load('lib/passengerJobRecover.ts');
+  assert.match(recover, /stopsFromJobNodes\(d\)/);
+  assert.doesNotMatch(recover, /stops:\s*\[\s*\]/);
+  const parser = load('lib/parseJobStops.ts');
+  assert.match(parser, /lat@lng@address/);
+  const detail = load('app/history-detail.tsx');
+  assert.match(detail, /item\.stops/);
+  assert.match(detail, /Stop \$\{i \+ 1\}/);
+  const hist = load('context/RideContext.tsx');
+  assert.match(hist, /historyPayloadFromRide/);
+  assert.match(hist, /\.\.\.\(stops\.length \? \{ stops \} : \{\}\)/);
+});
+
+test('passenger count is a dropdown, not a 1-8 button row', () => {
+  const booking = load('app/booking/index.tsx');
+  assert.match(booking, /PassengerCountSelect/);
+  assert.doesNotMatch(booking, /\[1, 2, 3, 4, 5, 6, 7, 8\]\.map/);
+  const sel = load('components/PassengerCountSelect.tsx');
+  assert.match(sel, /PASSENGERS/);
+  assert.match(sel, /chevron-down/);
+  assert.match(sel, /passengers/);
 });
 
 test('active-ride completed UI is single-path (no Rate & Complete duplicate)', () => {

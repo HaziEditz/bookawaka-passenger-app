@@ -26,6 +26,8 @@ export interface HistoryItem {
   status: TripStatus;
   from?: string;
   to?: string;
+  /** Intermediate extra stops (creation or later edit). */
+  stops?: string[];
   restaurantName?: string;
   items?: string;
   description?: string;
@@ -88,6 +90,9 @@ export function TripProvider({ children }: { children: React.ReactNode }) {
           status: data.status,
           from: data.from,
           to: data.to,
+          stops: Array.isArray(data.stops)
+            ? data.stops.map((s: unknown) => String(s || "").trim()).filter(Boolean)
+            : undefined,
           restaurantName: data.restaurantName,
           items: data.items,
           description: data.description,

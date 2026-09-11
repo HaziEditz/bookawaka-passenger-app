@@ -115,6 +115,17 @@ export default function RideCompleteScreen() {
             status: "completed",
             from: pickup.address,
             to: destination.address,
+            stops: (stops || [])
+              .map((s) => {
+                const addr =
+                  typeof s === "object" && s && "place" in s
+                    ? String((s as { place?: { address?: string } }).place?.address || "")
+                    : typeof s === "object" && s && "address" in s
+                      ? String((s as { address?: string }).address || "")
+                      : String(s || "");
+                return addr.trim();
+              })
+              .filter(Boolean),
             price: total,
             paymentMethod:
               payment === "wallet" ? "wallet"

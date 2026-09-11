@@ -506,11 +506,15 @@ function historyPaymentMethod(payment: PaymentMethodRide): PaymentMethod {
 }
 
 function historyPayloadFromRide(ride: ActiveRide): HistoryWriteInput {
+  const stops = (ride.stops || [])
+    .map((s) => String(s?.place?.address || "").trim())
+    .filter(Boolean);
   return {
     serviceType: "taxi",
     status: ride.status === "cancelled" || ride.status === "no_show" ? "cancelled" : "completed",
     from: ride.pickup?.address,
     to: ride.destination?.address,
+    ...(stops.length ? { stops } : {}),
     price: Number(ride.fare) || 0,
     paymentMethod: historyPaymentMethod(ride.payment),
     driverName: ride.driver?.name,

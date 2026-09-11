@@ -79,6 +79,9 @@ export default function HistoryDetailScreen() {
           {item.from ? (
             <Row label="From" value={item.from} colors={colors} />
           ) : null}
+          {(item.stops || []).map((stop, i) => (
+            <Row key={`stop-${i}`} label={item.stops!.length === 1 ? "Via" : `Stop ${i + 1}`} value={stop} colors={colors} />
+          ))}
           {item.to ? (
             <Row label="To" value={item.to} colors={colors} />
           ) : null}

@@ -5,6 +5,9 @@
 import type { ActiveRide, RideStatus, VehicleType, PaymentMethodRide } from "@/context/RideContext";
 import type { HistoryWriteInput } from "@/context/TripContext";
 import type { PlaceDetail } from "@/lib/googlePlaces";
+import { parseJobStops } from "@/lib/parseJobStops";
+
+export { parseJobStops } from "@/lib/parseJobStops";
 
 const TERMINAL = new Set([
   "completed",
@@ -95,16 +98,25 @@ export function mapJobStatusToRide(raw: unknown): RideStatus | null {
   return map[lower] || map[s] || null;
 }
 
+function locObj(raw: unknown): Record<string, unknown> | null {
+  return raw && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
+}
+
 function placeFrom(d: Record<string, unknown>, kind: "pickup" | "dropoff"): PlaceDetail {
+  const loc = locObj(kind === "pickup" ? d.pickupLocation : d.dropoffLocation);
   const address =
     kind === "pickup"
-      ? String(d.PickupAddress || d.pickupAddress || d.pickup || "Pickup")
-      : String(d.DropoffAddress || d.dropoffAddress || d.DropAddress || d.dropoff || "Dropoff");
+      ? String(d.PickAddress || d.PickupAddress || d.pickupAddress || d.pickup || loc?.address || "Pickup")
+      : String(d.DropAddress || d.DropoffAddress || d.dropoffAddress || d.dropoff || loc?.address || "Dropoff");
   const lat = Number(
-    kind === "pickup" ? d.PickupLat ?? d.pickupLat ?? d.pickup_lat : d.DropoffLat ?? d.dropoffLat ?? d.dropoff_lat,
+    kind === "pickup"
+      ? d.PickLat ?? d.PickupLat ?? d.pickupLat ?? d.pickup_lat ?? loc?.lat
+      : d.DropLat ?? d.DropoffLat ?? d.dropoffLat ?? d.dropoff_lat ?? loc?.lat,
   );
   const lng = Number(
-    kind === "pickup" ? d.PickupLng ?? d.pickupLng ?? d.pickup_lng : d.DropoffLng ?? d.dropoffLng ?? d.dropoff_lng,
+    kind === "pickup"
+      ? d.PickLng ?? d.PickupLng ?? d.pickupLng ?? d.pickup_lng ?? loc?.lng
+      : d.DropLng ?? d.DropoffLng ?? d.dropoffLng ?? d.dropoff_lng ?? loc?.lng,
   );
   return {
     placeId: "",
@@ -124,6 +136,21 @@ function paymentFrom(d: Record<string, unknown>): PaymentMethodRide {
   if (raw.includes("gift")) return "gift_card";
   if (raw.includes("card") || raw.includes("stripe")) return "card";
   return "cash";
+}
+
+export function stopsFromJobNodes(d: Record<string, unknown>): ActiveRide["stops"] {
+  return parseJobStops(d).map((s, i) => ({
+    id: `stop-${i}`,
+    place: {
+      placeId: "",
+      name: s.address.split(",")[0] || s.address,
+      address: s.address,
+      location: {
+        latitude: s.lat,
+        longitude: s.lng,
+      },
+    },
+  }));
 }
 
 export function pickAuthoritativeStatus(
@@ -202,7 +229,7 @@ export function buildActiveRideFromJobNodes(
     companyId,
     pickup: placeFrom(d, "pickup"),
     destination: placeFrom(d, "dropoff"),
-    stops: [],
+    stops: stopsFromJobNodes(d),
     vehicleType: (String(d.VehicleType || d.vehicleType || "standard") as VehicleType) || "standard",
     payment: paymentFrom(d),
     fare: Number(d.EstimatedFare ?? d.estimatedFare ?? d.CustomeRate ?? d.fare ?? 0) || 0,
@@ -238,11 +265,13 @@ export function historyFromJobNodes(
   if (!isTerminalJobStatus(statusRaw)) return null;
   const lower = String(statusRaw).toLowerCase();
   const cancelled = lower.includes("cancel") || lower.includes("no");
+  const stopLabels = parseJobStops(d).map((s) => s.address);
   return {
     serviceType: "taxi",
     status: cancelled ? "cancelled" : "completed",
-    from: String(d.PickupAddress || d.pickupAddress || d.pickup || ""),
-    to: String(d.DropoffAddress || d.dropoffAddress || d.DropAddress || d.dropoff || ""),
+    from: String(d.PickAddress || d.PickupAddress || d.pickupAddress || d.pickup || ""),
+    to: String(d.DropAddress || d.DropoffAddress || d.dropoffAddress || d.dropoff || ""),
+    ...(stopLabels.length ? { stops: stopLabels } : {}),
     price: Number(d.TotalFare ?? d.totalFare ?? d.EstimatedFare ?? d.estimatedFare ?? d.CustomeRate ?? 0) || 0,
     paymentMethod:
       paymentFrom(d) === "wallet"

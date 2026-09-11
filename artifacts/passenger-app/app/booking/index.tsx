@@ -19,6 +19,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { PlacesAutocomplete } from "@/components/PlacesAutocomplete";
+import { PassengerCountSelect } from "@/components/PassengerCountSelect";
 import { RouteMap } from "@/components/RouteMap";
 import { TMCardScanner } from "@/components/TMCardScanner";
 import { Company, VehicleType, VehicleTypeOption, VEHICLES, VEHICLE_CAPACITY, VEHICLE_LABELS, VEHICLE_OPTION_LABELS } from "@/constants/companies";
@@ -1497,36 +1498,16 @@ export default function BookingScreen() {
                 {!isTM && (
                   <>
                     <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>PASSENGERS</Text>
-                    <View style={styles.passengerRowMain}>
-                      {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
-                        <Pressable
-                          key={n}
-                          onPress={() => {
-                            Haptics.selectionAsync();
-                            setPassengerCount(n);
-                            setFareLockedVehicleType(undefined);
-                            if (n >= 5) setVehicleType("Van");
-                            else if (vehicleType === "Van" && n < 5) setVehicleType("Any");
-                          }}
-                          style={[
-                            styles.passengerBtn,
-                            {
-                              backgroundColor: passengerCount === n ? colors.primary : colors.card,
-                              borderColor: passengerCount === n ? colors.primary : colors.border,
-                            },
-                          ]}
-                        >
-                          <Text
-                            style={[
-                              styles.passengerBtnText,
-                              { color: passengerCount === n ? "#fff" : colors.foreground },
-                            ]}
-                          >
-                            {n}
-                          </Text>
-                        </Pressable>
-                      ))}
-                    </View>
+                    <PassengerCountSelect
+                      value={passengerCount}
+                      colors={colors}
+                      onChange={(n) => {
+                        setPassengerCount(n);
+                        setFareLockedVehicleType(undefined);
+                        if (n >= 5) setVehicleType("Van");
+                        else if (vehicleType === "Van" && n < 5) setVehicleType("Any");
+                      }}
+                    />
                     <Text style={[styles.rideshareSub, { color: colors.mutedForeground, marginBottom: 12 }]}>
                       Used for vehicle type and fare — not just ride sharing.
                     </Text>

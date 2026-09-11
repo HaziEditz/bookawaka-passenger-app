@@ -1,6 +1,6 @@
 import { Redirect, useLocalSearchParams } from "expo-router";
 import React, { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Text, View } from "react-native";
+import { ActivityIndicator, Alert, Pressable, Text, View } from "react-native";
 import { get as rtdbGet, ref as rtdbRef } from "firebase/database";
 import { useNotification } from "@/context/NotificationContext";
 import { useRide } from "@/context/RideContext";
@@ -12,6 +12,7 @@ const VERIFY_TIMEOUT_MS = 12_000;
 const HARD_FINISH_MS = 15_000;
 
 type Phase = "working" | "done" | "fail" | "scheduled_done";
+type AsapDest = "choose" | "home" | "trace";
 
 /**
  * Deep-link target for Stripe return: passenger-app://stripe-return?booking&cid&session_id
@@ -48,6 +49,8 @@ export default function StripeReturnScreen() {
   const kind = String(params.kind || "success").trim().toLowerCase();
   const [phase, setPhase] = useState<Phase>("working");
   const [error, setError] = useState<string | null>(null);
+  const [asapDest, setAsapDest] = useState<AsapDest>("choose");
+  const askedChoice = useRef(false);
   const ran = useRef(false);
   const resumeRef = useRef(resumeActiveRide);
   const markPaidRef = useRef(markPaymentConfirmed);
@@ -152,6 +155,20 @@ export default function StripeReturnScreen() {
     })();
   }, [hydrateReady, booking, cid, sessionId, kind]);
 
+  useEffect(() => {
+    if (phase !== "done" || askedChoice.current) return;
+    if (!booking || !cid) return;
+    askedChoice.current = true;
+    Alert.alert(
+      "Booking confirmed",
+      "We'll find you a driver. Trace the trip now, or go Home and come back from Active Ride anytime.",
+      [
+        { text: "Home", style: "cancel", onPress: () => setAsapDest("home") },
+        { text: "Trace trip", onPress: () => setAsapDest("trace") },
+      ],
+    );
+  }, [phase, booking, cid]);
+
   if (phase === "working" || (!hydrateReady && booking && phase === "working")) {
     return (
       <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 24 }}>
@@ -181,8 +198,35 @@ export default function StripeReturnScreen() {
     );
   }
 
-  // ASAP only — Later was handled above as scheduled_done.
-  if (booking && cid) {
+  // ASAP Card/Stripe: same Home vs Trace choice as wallet/cash. Do not auto-open Active Ride.
+  if (phase === "done" && booking && cid && asapDest === "choose") {
+    return (
+      <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 28, gap: 16 }}>
+        <Text style={{ textAlign: "center", fontSize: 18, fontWeight: "700" }}>Booking confirmed</Text>
+        <Text style={{ textAlign: "center", opacity: 0.75, lineHeight: 22 }}>
+          We'll find you a driver. Trace the trip now, or go Home and come back from Active Ride anytime.
+        </Text>
+        <Pressable
+          onPress={() => setAsapDest("home")}
+          style={{ paddingVertical: 14, paddingHorizontal: 28, borderRadius: 12, backgroundColor: "#e5e7eb", minWidth: 220, alignItems: "center" }}
+        >
+          <Text style={{ fontWeight: "600" }}>Home</Text>
+        </Pressable>
+        <Pressable
+          onPress={() => setAsapDest("trace")}
+          style={{ paddingVertical: 14, paddingHorizontal: 28, borderRadius: 12, backgroundColor: "#1e40af", minWidth: 220, alignItems: "center" }}
+        >
+          <Text style={{ fontWeight: "600", color: "#fff" }}>Trace trip</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
+  if (asapDest === "home") {
+    return <Redirect href="/(tabs)" />;
+  }
+
+  if ((asapDest === "trace" || phase === "fail") && booking && cid) {
     return (
       <Redirect
         href={{
@@ -193,7 +237,7 @@ export default function StripeReturnScreen() {
     );
   }
 
-  if (activeRide) {
+  if (activeRide && asapDest === "trace") {
     return <Redirect href="/active-ride" />;
   }
 
