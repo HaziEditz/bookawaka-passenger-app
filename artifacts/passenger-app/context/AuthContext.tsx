@@ -7,10 +7,11 @@ import {
   updateProfile,
   User as FirebaseUser,
 } from "firebase/auth";
-import { onValue, ref, set, update } from "firebase/database";
+import { get, onValue, ref, set, update } from "firebase/database";
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { Platform } from "react-native";
 import { auth, rtdb } from "@/lib/firebase";
+import { keysFromIndexRow } from "@/lib/passengerJobKeyUtils";
 import { registerForPushNotificationsAsync } from "@/lib/pushNotifications";
 
 /**
@@ -153,9 +154,27 @@ async function persistExpoPushToken(uid: string) {
  */
 async function writePhoneIndex(digits: string, uid: string, email: string) {
   if (!digits || !uid || isPoisonPassengerKey(uid) || !email.includes("@")) return;
-  const payload = { key: uid, email: email.toLowerCase(), uid, updatedAt: Date.now() };
-  await set(ref(rtdb, `passengerIndex/phone/${digits}`), payload).catch(() =>
-    update(ref(rtdb, `passengerIndex/phone/${digits}`), payload).catch(() => undefined),
+  const path = `passengerIndex/phone/${digits}`;
+  let existing: unknown = null;
+  try {
+    const snap = await get(ref(rtdb, path));
+    existing = snap.exists() ? snap.val() : null;
+  } catch {
+    /* best-effort merge */
+  }
+  const aliasKeys = new Set(keysFromIndexRow(existing));
+  aliasKeys.add(uid);
+  const aliases: Record<string, true> = {};
+  for (const k of aliasKeys) aliases[k] = true;
+  const payload = {
+    key: uid,
+    email: email.toLowerCase(),
+    uid,
+    updatedAt: Date.now(),
+    aliases,
+  };
+  await set(ref(rtdb, path), payload).catch(() =>
+    update(ref(rtdb, path), payload).catch(() => undefined),
   );
 }
 

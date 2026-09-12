@@ -50,6 +50,7 @@ import {
   mergePassengerJobTrees,
   resolvePassengerJobTreeKeys,
 } from "@/lib/passengerJobTrees";
+import { comparePassengerJobsForRecover } from "@/lib/passengerJobKeyUtils";
 import {
   driverOf,
   payOf,
@@ -1138,6 +1139,9 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
       Source: "PassengerApp",
       BookingSource: "PassengerApp",
       CreatedBy: "APP",
+      ServiceType: "taxi",
+      serviceType: "taxi",
+      BookingType: params.scheduledAt ? "Prebook" : "ASAP",
       PickupPin: pickupPin,
       pickupPin,
       // Status logic (payment-first — matches website POST /bookings):
@@ -1374,7 +1378,15 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
         firestoreData: bookingData as unknown as Record<string, unknown>,
       });
     } catch (apiErr) {
-      console.warn("[BookingAPI] API create failed — trying direct RTDB fallback:", (apiErr as Error).message);
+      const code = String((apiErr as { code?: string })?.code || "");
+      const msg = (apiErr as Error).message || "";
+      if (code === "DUPLICATE_ACTIVE_BOOKING" || /already have an active/i.test(msg)) {
+        setActiveRide(null);
+        pendingJobRef.current = null;
+        notify("Booking already active", msg || "You already have an ASAP trip in progress.", "error");
+        throw apiErr;
+      }
+      console.warn("[BookingAPI] API create failed — trying direct RTDB fallback:", msg);
       try {
         const st = String(rtdbJobData.Status || "").toLowerCase().replace(/[_\s]/g, "");
         const hold = st === "pendingpayment" || st === "paymentpending";
@@ -2654,14 +2666,10 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
             : "Passengerjobs tree missing/empty — nothing to recover";
           return;
         }
-        entries.sort((a, b) => {
-          const ta = Number(a[1].CreatedAt ?? a[1].createdAt ?? 0);
-          const tb = Number(b[1].CreatedAt ?? b[1].createdAt ?? 0);
-          return tb - ta;
-        });
+        entries.sort((a, b) => comparePassengerJobsForRecover(a[1], b[1]));
 
         let restoredLive = false;
-        for (const [jobId, paxJob] of entries.slice(0, 30)) {
+        for (const [jobId, paxJob] of entries) {
           if (cancelled) return;
           const companyId = String(paxJob.CompanyId || paxJob.companyId || "").trim();
           if (!companyId) continue;
@@ -2842,12 +2850,8 @@ function RideProviderInner({ children }: { children: React.ReactNode }) {
         if (activeRideRef.current) return;
         const merged = mergePassengerJobTrees(Object.values(trees));
         const entries = Object.entries(merged || {}).filter(([, v]) => v && typeof v === "object");
-        entries.sort((a, b) => {
-          const ta = Number(a[1].CreatedAt ?? a[1].createdAt ?? 0);
-          const tb = Number(b[1].CreatedAt ?? b[1].createdAt ?? 0);
-          return tb - ta;
-        });
-        for (const [jobId, paxJob] of entries.slice(0, 15)) {
+        entries.sort((a, b) => comparePassengerJobsForRecover(a[1], b[1]));
+        for (const [jobId, paxJob] of entries) {
           const companyId = String(paxJob.CompanyId || paxJob.companyId || "").trim();
           if (!companyId) continue;
           const ok = await resumeActiveRide(companyId, jobId);

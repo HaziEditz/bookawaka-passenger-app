@@ -7,6 +7,7 @@ import { get as rtdbGet, ref as rtdbRef } from "firebase/database";
 import { rtdb } from "@/lib/firebase";
 import {
   emailIndexKey,
+  keysFromIndexRow,
   mergePassengerJobTrees,
   phoneIndexCandidates,
 } from "@/lib/passengerJobKeyUtils";
@@ -39,9 +40,8 @@ export async function resolvePassengerJobTreeKeys(opts: {
       rtdbGet(rtdbRef(rtdb, `passengerIndex/email/${emailKey}`))
         .then((snap) => {
           if (!snap.exists()) return;
-          const val = snap.val() as { key?: unknown; uid?: unknown } | null;
-          addJobKey(keys, val?.key);
-          addJobKey(keys, val?.uid);
+          const val = snap.val();
+          for (const k of keysFromIndexRow(val)) addJobKey(keys, k);
         })
         .catch(() => undefined),
     );
@@ -51,9 +51,8 @@ export async function resolvePassengerJobTreeKeys(opts: {
       rtdbGet(rtdbRef(rtdb, `passengerIndex/phone/${cand}`))
         .then((snap) => {
           if (!snap.exists()) return;
-          const val = snap.val() as { key?: unknown; uid?: unknown } | null;
-          addJobKey(keys, val?.key);
-          addJobKey(keys, val?.uid);
+          const val = snap.val();
+          for (const k of keysFromIndexRow(val)) addJobKey(keys, k);
         })
         .catch(() => undefined),
     );

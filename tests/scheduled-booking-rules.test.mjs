@@ -9,6 +9,9 @@ import {
 } from "../artifacts/passenger-app/lib/scheduledBookingRules.ts";
 import {
   collectLocalPassengerJobKeys,
+  comparePassengerJobsForRecover,
+  jobCreatedAtMs,
+  keysFromIndexRow,
   mergePassengerJobTrees,
   phoneIndexCandidates,
 } from "../artifacts/passenger-app/lib/passengerJobKeyUtils.ts";
@@ -112,5 +115,48 @@ describe("passenger job tree merge / index keys", () => {
   it("canonical NZ phone is first candidate", () => {
     const c = phoneIndexCandidates("0276698294");
     assert.equal(c[0], "64276698294");
+  });
+
+  it("parses website ISO CreatedAt so live ASAP ranks above PendingPayment zombies", () => {
+    const websiteAsap = {
+      Status: "Pending",
+      CreatedAt: "2026-09-12T01:03:04.998Z",
+      createdAt: 1789174984998,
+    };
+    const zombieHold = {
+      Status: "PendingPayment",
+      CreatedAt: 1788000000000,
+      createdAt: 1788000000000,
+    };
+    assert.ok(jobCreatedAtMs(websiteAsap) > 1e12);
+    assert.equal(Number(websiteAsap.CreatedAt), Number.NaN);
+    assert.ok(comparePassengerJobsForRecover(websiteAsap, zombieHold) < 0);
+    const ranked = [zombieHold, websiteAsap].sort(comparePassengerJobsForRecover);
+    assert.equal(ranked[0].Status, "Pending");
+  });
+
+  it("index aliases include previous uid", () => {
+    const keys = keysFromIndexRow({
+      key: "AppUid",
+      uid: "AppUid",
+      aliases: { AppUid: true, WebUid: true },
+    });
+    assert.deepEqual(keys.sort(), ["AppUid", "WebUid"]);
+  });
+});
+
+describe("source contracts", () => {
+  it("hydrate ranks recover jobs instead of slicing Number(ISO) NaN", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const ride = readFileSync(
+      join(import.meta.dirname, "../artifacts/passenger-app/context/RideContext.tsx"),
+      "utf8",
+    );
+    assert.match(ride, /comparePassengerJobsForRecover/);
+    assert.match(ride, /DUPLICATE_ACTIVE_BOOKING/);
+    assert.match(ride, /ServiceType: "taxi"/);
+    assert.doesNotMatch(ride, /entries\.slice\(0, 30\)/);
+    assert.doesNotMatch(ride, /entries\.slice\(0, 15\)/);
   });
 });

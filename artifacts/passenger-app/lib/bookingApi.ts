@@ -67,7 +67,13 @@ async function apiPost(
   }
   const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) {
-    throw new Error(String(data.error ?? `Booking service error ${res.status}`));
+    const err = new Error(String(data.error ?? `Booking service error ${res.status}`)) as Error & {
+      code?: string;
+      existingBookingId?: string;
+    };
+    err.code = String(data.code ?? "");
+    if (data.existingBookingId) err.existingBookingId = String(data.existingBookingId);
+    throw err;
   }
   return data;
 }
