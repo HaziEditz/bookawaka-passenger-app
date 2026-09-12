@@ -38,6 +38,12 @@ import { checkTripSanity } from "@/lib/tripGeoGuard";
 import { useTMSettings, calcTMSubsidy } from "@/lib/tmSettings";
 import { useColors } from "@/hooks/useColors";
 import { openStripeCheckout, verifyAndDispatchBooking, StripeCheckoutCancelledError } from "@/lib/stripePayment";
+import {
+  ACTIVE_ASAP_LATER_ONLY_MSG,
+  ACTIVE_ASAP_LATER_ONLY_TITLE,
+  activeRideBlocksAsap,
+} from "@/lib/asapDuplicateUx";
+import { checkActiveAsapBooking } from "@/lib/bookingApi";
 import { useAppConfig } from "@/context/AppConfigContext";
 import {
   FALLBACK_TZ,
@@ -80,7 +86,7 @@ type Step = "location" | "vehicle" | "confirm";
 export default function BookingScreen() {
   const colors = useColors();
   const { user, firebaseUser, updateWallet } = useAuth();
-  const { startRide, abortRide, releaseAbortHandle, markPaymentConfirmed } = useRide();
+  const { startRide, abortRide, releaseAbortHandle, markPaymentConfirmed, activeRide } = useRide();
   const { notify } = useNotification();
   const { settings: tmSettings } = useTMSettings();
   const { platformCashEnabled } = useAppConfig();
@@ -219,6 +225,7 @@ export default function BookingScreen() {
 
   // Scheduled booking state
   const [isScheduled, setIsScheduled] = useState(() => params.initialScheduled === "true");
+  const [asapDuplicateBlocked, setAsapDuplicateBlocked] = useState(() => false);
   const [pickerDaysAhead, setPickerDaysAhead] = useState(0);
   const [pickerHour, setPickerHour] = useState(() => getTZTimeParts(FALLBACK_TZ).hour12);
   const [pickerMinIdx, setPickerMinIdx] = useState(0); // 0=:00 1=:15 2=:30 3=:45
@@ -242,6 +249,32 @@ export default function BookingScreen() {
   }, [isScheduled, bookingTZ, pickerDaysAhead, pickerHour, pickerMinIdx, pickerAmPm]);
 
   const scheduledAtValid = !scheduledAt || scheduledAt.getTime() - Date.now() >= 30 * 60 * 1000;
+
+  const applyAsapDuplicateBlock = () => {
+    setAsapDuplicateBlocked(true);
+    setIsScheduled(true);
+  };
+
+  useEffect(() => {
+    if (activeRideBlocksAsap(activeRide)) {
+      applyAsapDuplicateBlock();
+      return;
+    }
+    const phone = user?.phone || firebaseUser?.phoneNumber || "";
+    if (String(phone).replace(/\D/g, "").length < 7) {
+      setAsapDuplicateBlocked(false);
+      return;
+    }
+    let cancelled = false;
+    void checkActiveAsapBooking(phone, "taxi").then((hit) => {
+      if (cancelled) return;
+      if (hit.hasActive) applyAsapDuplicateBlock();
+      else setAsapDuplicateBlocked(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeRide, user?.phone, firebaseUser?.phoneNumber]);
 
   // ASAP rides require company dispatch online + within operating hours.
   // Individual driver online/busy is ignored — job sits in Pending until a driver takes it.
@@ -740,6 +773,12 @@ export default function BookingScreen() {
       Alert.alert("Missing Info", "Please enter both pickup and destination.");
       return;
     }
+    if (asapDuplicateBlocked && !isScheduled) {
+      Alert.alert(ACTIVE_ASAP_LATER_ONLY_TITLE, ACTIVE_ASAP_LATER_ONLY_MSG, [
+        { text: "Book for Later", onPress: () => setIsScheduled(true) },
+      ]);
+      return;
+    }
     // ASAP blocked when company dispatch is offline or outside operating hours
     if (asapBlocked && !isScheduled) {
       Alert.alert(
@@ -784,6 +823,13 @@ export default function BookingScreen() {
       return;
     }
     if (!pickup || !destination || !route) return;
+
+    if (asapDuplicateBlocked && !isScheduled) {
+      Alert.alert(ACTIVE_ASAP_LATER_ONLY_TITLE, ACTIVE_ASAP_LATER_ONLY_MSG, [
+        { text: "Book for Later", onPress: () => setIsScheduled(true) },
+      ]);
+      return;
+    }
 
     // Enforce scheduled time validity — must be at least 30 minutes from now
     if (isScheduled && !scheduledAtValid) {
@@ -1209,11 +1255,23 @@ export default function BookingScreen() {
             {/* ── Now / Later toggle ──────────────────────────────────────── */}
             <View style={[styles.nowLaterRow, { backgroundColor: colors.muted, borderColor: colors.border }]}>
               <Pressable
-                onPress={() => { Haptics.selectionAsync(); setIsScheduled(false); }}
-                style={[styles.nowLaterTab, !isScheduled && { backgroundColor: colors.card, shadowColor: "#000", shadowOpacity: 0.08, shadowRadius: 4, shadowOffset: { width: 0, height: 1 }, elevation: 2 }]}
+                onPress={() => {
+                  if (asapDuplicateBlocked) {
+                    Alert.alert(ACTIVE_ASAP_LATER_ONLY_TITLE, ACTIVE_ASAP_LATER_ONLY_MSG);
+                    setIsScheduled(true);
+                    return;
+                  }
+                  Haptics.selectionAsync();
+                  setIsScheduled(false);
+                }}
+                style={[
+                  styles.nowLaterTab,
+                  !isScheduled && { backgroundColor: colors.card, shadowColor: "#000", shadowOpacity: 0.08, shadowRadius: 4, shadowOffset: { width: 0, height: 1 }, elevation: 2 },
+                  asapDuplicateBlocked && { opacity: 0.45 },
+                ]}
               >
-                <Feather name="zap" size={13} color={!isScheduled ? colors.primary : colors.mutedForeground} />
-                <Text style={[styles.nowLaterTabText, { color: !isScheduled ? colors.primary : colors.mutedForeground, fontFamily: !isScheduled ? "Inter_600SemiBold" : "Inter_400Regular" }]}>Now</Text>
+                <Feather name="zap" size={13} color={!isScheduled && !asapDuplicateBlocked ? colors.primary : colors.mutedForeground} />
+                <Text style={[styles.nowLaterTabText, { color: !isScheduled && !asapDuplicateBlocked ? colors.primary : colors.mutedForeground, fontFamily: !isScheduled && !asapDuplicateBlocked ? "Inter_600SemiBold" : "Inter_400Regular" }]}>Now</Text>
               </Pressable>
               <Pressable
                 onPress={() => { Haptics.selectionAsync(); setIsScheduled(true); }}
@@ -1223,6 +1281,17 @@ export default function BookingScreen() {
                 <Text style={[styles.nowLaterTabText, { color: isScheduled ? colors.primary : colors.mutedForeground, fontFamily: isScheduled ? "Inter_600SemiBold" : "Inter_400Regular" }]}>Schedule</Text>
               </Pressable>
             </View>
+
+            {asapDuplicateBlocked && (
+              <View style={{ backgroundColor: "#fef3c7", borderColor: "#fcd34d", borderWidth: 1, borderRadius: 12, padding: 12 }}>
+                <Text style={{ color: "#92400e", fontFamily: "Inter_600SemiBold", fontSize: 14 }}>
+                  {ACTIVE_ASAP_LATER_ONLY_TITLE}
+                </Text>
+                <Text style={{ color: "#92400e", fontSize: 13, marginTop: 4 }}>
+                  {ACTIVE_ASAP_LATER_ONLY_MSG}
+                </Text>
+              </View>
+            )}
 
             {/* ── Date / time picker (visible when "Later" is selected) ───── */}
             {isScheduled && (

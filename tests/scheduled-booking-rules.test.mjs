@@ -159,4 +159,23 @@ describe("source contracts", () => {
     assert.doesNotMatch(ride, /entries\.slice\(0, 30\)/);
     assert.doesNotMatch(ride, /entries\.slice\(0, 15\)/);
   });
+
+  it("blocks ASAP at first tap on Home and booking Now tab", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const root = join(import.meta.dirname, "../artifacts/passenger-app");
+    const home = readFileSync(join(root, "app/(tabs)/index.tsx"), "utf8");
+    const booking = readFileSync(join(root, "app/booking/index.tsx"), "utf8");
+    const { activeRideBlocksAsap, ACTIVE_ASAP_LATER_ONLY_MSG } = await import(
+      "../artifacts/passenger-app/lib/asapDuplicateUx.ts"
+    );
+    assert.equal(activeRideBlocksAsap({ status: "searching" }), true);
+    assert.equal(activeRideBlocksAsap({ status: "scheduled" }), false);
+    assert.equal(activeRideBlocksAsap(null), false);
+    assert.match(home, /beginTaxiBooking/);
+    assert.match(booking, /asapDuplicateBlocked/);
+    assert.match(booking, /ACTIVE_ASAP_LATER_ONLY_MSG/);
+    assert.match(booking, /checkActiveAsapBooking/);
+    assert.match(ACTIVE_ASAP_LATER_ONLY_MSG, /Later booking/);
+  });
 });

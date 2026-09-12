@@ -18,6 +18,8 @@ import { useColors } from "@/hooks/useColors";
 import { useSuperBroadcast } from "@/hooks/useSuperBroadcast";
 import { useCompanies, isLoadTestCompanyId } from "@/context/CompaniesContext";
 import { FALLBACK_TZ } from "@/lib/timezone";
+import { activeRideBlocksAsap } from "@/lib/asapDuplicateUx";
+import { beginTaxiBooking } from "@/lib/asapDuplicateNav";
 
 const SERVICE_TILES = [
   { label: "Book a Waka", subtitle: "Taxi", icon: "navigation" as const, color: "#1e40af", route: "/booking" },
@@ -41,6 +43,8 @@ export default function HomeScreen() {
   );
   const recent = history.slice(0, 3);
   const topPadding = Platform.OS === "web" ? insets.top + 67 : insets.top;
+  const liveAsapBlocks = activeRideBlocksAsap(activeRide);
+  const startTaxi = () => beginTaxiBooking(liveAsapBlocks);
 
   return (
     <ScrollView
@@ -145,7 +149,7 @@ export default function HomeScreen() {
 
       {/* Quick Book */}
       <Pressable
-        onPress={() => router.push("/booking")}
+        onPress={startTaxi}
         style={[styles.quickBook, { backgroundColor: colors.card, borderColor: colors.border }]}
       >
         <View style={styles.quickBookLeft}>
@@ -179,7 +183,10 @@ export default function HomeScreen() {
           {SERVICE_TILES.map((tile) => (
             <Pressable
               key={tile.label}
-              onPress={() => router.push(tile.route as any)}
+              onPress={() => {
+                if (tile.route === "/booking") startTaxi();
+                else router.push(tile.route as any);
+              }}
               style={({ pressed }) => [
                 styles.serviceTile,
                 { backgroundColor: colors.card, borderColor: colors.border, opacity: pressed ? 0.85 : 1, transform: [{ scale: pressed ? 0.97 : 1 }] },
@@ -218,7 +225,7 @@ export default function HomeScreen() {
           ) : liveCompanies.map((c) => (
             <Pressable
               key={c.id}
-              onPress={() => router.push("/booking")}
+              onPress={startTaxi}
               style={[styles.companyCard, { backgroundColor: colors.card, borderColor: colors.border }]}
             >
               <View style={styles.companyDotRow}>

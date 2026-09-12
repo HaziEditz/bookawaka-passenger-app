@@ -18,7 +18,10 @@ import { PhoneInput } from "@/components/PhoneInput";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AppBuildLabel } from "@/components/AppBuildLabel";
 import { useAuth } from "@/context/AuthContext";
+import { useRide } from "@/context/RideContext";
 import { useColors } from "@/hooks/useColors";
+import { activeRideBlocksAsap } from "@/lib/asapDuplicateUx";
+import { beginTaxiBooking } from "@/lib/asapDuplicateNav";
 
 const ADDR_KEY = "@saved_addresses";
 const FAV_KEY = "@fav_drivers";
@@ -46,6 +49,7 @@ const PRESET_LABELS = [
 export default function ProfileScreen() {
   const colors = useColors();
   const { user, isLoading, logout, updateUserProfile } = useAuth();
+  const { activeRide } = useRide();
   const insets = useSafeAreaInsets();
 
   const [addresses, setAddresses] = useState<SavedAddress[]>([]);
@@ -295,7 +299,7 @@ export default function ProfileScreen() {
                 <React.Fragment key={addr.id}>
                   {i > 0 && <View style={[styles.divider, { backgroundColor: colors.border }]} />}
                   <Pressable
-                    onPress={() => router.push("/booking")}
+                    onPress={() => beginTaxiBooking(activeRideBlocksAsap(activeRide))}
                     style={styles.listRow}
                   >
                     <View style={[styles.listIcon, { backgroundColor: colors.primary + "15" }]}>

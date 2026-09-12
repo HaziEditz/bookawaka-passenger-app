@@ -78,6 +78,39 @@ async function apiPost(
   return data;
 }
 
+export async function checkActiveAsapBooking(
+  phone: string,
+  serviceType = "taxi",
+): Promise<{ hasActive: boolean; existingBookingId?: string; existingStatus?: string }> {
+  if (!BOOKING_BASE) return { hasActive: false };
+  const digits = String(phone || "").replace(/\D/g, "");
+  if (digits.length < 7) return { hasActive: false };
+  const params = new URLSearchParams({
+    phone: String(phone).trim(),
+    serviceType,
+  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${BOOKING_BASE}/api/bookings/active-check?${params}`, {
+      signal: controller.signal,
+    });
+    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (data.hasActive === true && data.existingBookingId) {
+      return {
+        hasActive: true,
+        existingBookingId: String(data.existingBookingId),
+        existingStatus: data.existingStatus != null ? String(data.existingStatus) : undefined,
+      };
+    }
+  } catch {
+    /* booking screen still uses activeRide */
+  } finally {
+    clearTimeout(timer);
+  }
+  return { hasActive: false };
+}
+
 export async function createBookingOnServer(params: {
   companyId: string;
   jobId: string;

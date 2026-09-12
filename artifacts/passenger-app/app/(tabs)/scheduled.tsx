@@ -22,6 +22,7 @@ import { formatCurrency } from "@/lib/fareCalculator";
 import { useColors } from "@/hooks/useColors";
 import { isScheduledTabVisible, jobDropoffLabel, jobPickupLabel } from "@/lib/scheduledBookingRules";
 import { mergePassengerJobTrees, resolvePassengerJobTreeKeys } from "@/lib/passengerJobTrees";
+import { beginLaterBooking } from "@/lib/asapDuplicateNav";
 
 interface ScheduledJob {
   id: string;
@@ -248,7 +249,7 @@ export default function ScheduledScreen() {
           </Text>
         </View>
         <Pressable
-          onPress={() => router.push("/booking")}
+          onPress={() => beginLaterBooking()}
           style={({ pressed }) => [
             styles.newBtn,
             { backgroundColor: colors.primary, opacity: pressed ? 0.8 : 1 },
@@ -275,7 +276,7 @@ export default function ScheduledScreen() {
             Book a ride in advance and it will appear here. Tap the button below to get started.
           </Text>
           <Pressable
-            onPress={() => router.push("/booking")}
+            onPress={() => beginLaterBooking()}
             style={({ pressed }) => [
               styles.actionBtn,
               { backgroundColor: colors.primary, opacity: pressed ? 0.8 : 1, alignSelf: "center" },
