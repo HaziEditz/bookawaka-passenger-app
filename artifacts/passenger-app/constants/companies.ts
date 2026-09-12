@@ -31,6 +31,8 @@ export interface Company {
   driversAvailable?: boolean;
   /** Live online body types for this company (empty = unknown / none online). */
   onlineVehicleTypes?: VehicleType[];
+  /** Real fleet seat counts by mapped type (not hardcoded VEHICLE_CAPACITY). */
+  vehicleCapacities?: Partial<Record<VehicleType, number>>;
   /**
    * ASAP allowed when company dispatch console is online (activeDispatchers)
    * AND within configured operating hours. Ignores individual driver status.
@@ -68,6 +70,13 @@ export const VEHICLE_CAPACITY: Record<VehicleType, number> = {
   Wheelchair: 2,
   Electric: 4,
 };
+
+/** Prefer this company's real fleet seats; fall back to the generic enum only if unknown. */
+export function getVehicleCapacity(company: Company | undefined, type: VehicleType): number {
+  const live = company?.vehicleCapacities?.[type];
+  if (typeof live === "number" && live > 0) return live;
+  return VEHICLE_CAPACITY[type];
+}
 
 export const DEFAULT_TARIFFS: Record<VehicleType, TariffRates> = {
   Sedan:     { baseFare: 5,  perKm: 1.5,  perMin: 0.25, stopFee: 3 },

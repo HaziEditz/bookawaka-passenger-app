@@ -22,7 +22,7 @@ import { PlacesAutocomplete } from "@/components/PlacesAutocomplete";
 import { PassengerCountSelect } from "@/components/PassengerCountSelect";
 import { RouteMap } from "@/components/RouteMap";
 import { TMCardScanner } from "@/components/TMCardScanner";
-import { Company, VehicleType, VehicleTypeOption, VEHICLES, VEHICLE_CAPACITY, VEHICLE_LABELS, VEHICLE_OPTION_LABELS } from "@/constants/companies";
+import { Company, VehicleType, VehicleTypeOption, VEHICLE_OPTION_LABELS, getVehicleCapacity } from "@/constants/companies";
 import { useCompanies, getVehicleTariff, isLoadTestCompanyId } from "@/context/CompaniesContext";
 import { useAuth } from "@/context/AuthContext";
 import { bookingTimeCancelRules, SUPPORT_EMAIL } from "@/lib/cancelFairness";
@@ -54,13 +54,13 @@ import {
 } from "@/lib/timezone";
 
 /** Prefer passenger need over fleet order — never default to Van just because it is listed first. */
-function pickNeedBasedVehicle(available: VehicleType[], paxNeeded: number): VehicleType {
+function pickNeedBasedVehicle(available: VehicleType[], paxNeeded: number, company?: Company): VehicleType {
   const list = available.length ? available : (["Sedan"] as VehicleType[]);
   const need = Math.max(1, paxNeeded || 1);
   const preference: VehicleType[] = ["Sedan", "Electric", "Luxury", "SUV", "Van", "Wheelchair"];
-  const fits = preference.filter((t) => list.includes(t) && VEHICLE_CAPACITY[t] >= need);
+  const fits = preference.filter((t) => list.includes(t) && getVehicleCapacity(company, t) >= need);
   if (fits.length) return fits[0];
-  const anyFit = list.find((t) => VEHICLE_CAPACITY[t] >= need);
+  const anyFit = list.find((t) => getVehicleCapacity(company, t) >= need);
   return anyFit ?? list[0] ?? "Sedan";
 }
 
@@ -336,7 +336,7 @@ export default function BookingScreen() {
       }
       return;
     }
-    if (vehicleType !== "Any" && (VEHICLE_CAPACITY[vehicleType] ?? 0) < passengerCount) {
+    if (vehicleType !== "Any" && getVehicleCapacity(company, vehicleType) < passengerCount) {
       setVehicleType("Any");
       setFareLockedVehicleType(undefined);
     }
@@ -1613,7 +1613,7 @@ export default function BookingScreen() {
                         <Feather name={vIcon} size={20} color={isSelected ? "#fff" : colors.mutedForeground} />
                         <Text style={[styles.vehicleLabel, { color: isSelected ? "#fff" : colors.foreground }]}>{VEHICLE_OPTION_LABELS[v]}</Text>
                         <Text style={[styles.vehicleCap, { color: isSelected ? "rgba(255,255,255,0.7)" : colors.mutedForeground }]}>
-                          {v === "Any" ? "Capacity-based" : `${VEHICLE_CAPACITY[v]} seats`}
+                          {v === "Any" ? "Capacity-based" : `${getVehicleCapacity(company, v)} seats`}
                         </Text>
                         {vFare && !isTM && (
                           <Text style={[styles.vehiclePrice, { color: isSelected ? "#fff" : colors.primary }]}>

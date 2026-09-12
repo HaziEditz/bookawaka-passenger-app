@@ -174,6 +174,20 @@ export function CompaniesProvider({ children }: { children: React.ReactNode }) {
       const vehicleNumberToType = new Map<string, VehicleType>();
       // companyId → Set of vehicle types from the vehicles collection (for Away fallback)
       const companyVehicleTypes = new Map<string, Set<VehicleType>>();
+      const companyVehicleCaps = new Map<string, Map<VehicleType, number>>();
+
+      function rememberFleetSeats(companyId: string, vt: VehicleType, cap: number) {
+        if (!companyId || !(cap > 0)) return;
+        if (!companyVehicleCaps.has(companyId)) companyVehicleCaps.set(companyId, new Map());
+        const caps = companyVehicleCaps.get(companyId)!;
+        caps.set(vt, Math.max(caps.get(vt) ?? 0, cap));
+      }
+
+      function fleetVehicleActive(r: Record<string, unknown>): boolean {
+        if (r.active === false) return false;
+        const status = String(r.status ?? r.Status ?? "active").toLowerCase();
+        return !["inactive", "maintenance", "disabled", "suspended"].includes(status);
+      }
 
       function registerVehicle(companyId: string, vehicleNum: string, cls: string, cap: number, wheelCap: number, make: string, model: string) {
         const vt = classToVehicleType(cls, cap, wheelCap, make, model);
@@ -184,6 +198,7 @@ export function CompaniesProvider({ children }: { children: React.ReactNode }) {
         if (companyId && cls.trim()) {
           if (!companyVehicleTypes.has(companyId)) companyVehicleTypes.set(companyId, new Set());
           companyVehicleTypes.get(companyId)!.add(vt);
+          rememberFleetSeats(companyId, vt, cap);
         }
       }
 
@@ -198,14 +213,14 @@ export function CompaniesProvider({ children }: { children: React.ReactNode }) {
           "vehiclenumber" in rec || "companyId" in rec || "cofNumber" in rec;
 
         function extractVehicleFields(r: Record<string, unknown>) {
-          const vNum = String(r.vehicleNumber ?? r.vehiclenumber ?? r.VehicleNumber ??
+          const vNum = String(r.taxiNumber ?? r.vehicleNo ?? r.vehicleNumber ?? r.vehiclenumber ?? r.VehicleNumber ??
             r.licensePlate ?? r.plate ?? r.registration ?? r.rego ?? "").trim();
           const cls = String(r.vehicleClass ?? r.VehicleClass ?? r.vehicleType ?? r.VehicleType ??
             r.type ?? r.Type ?? r.category ?? r.Category ?? r.class ?? r.Class ??
             r.carType ?? r.CarType ?? r.carClass ?? r.bodyType ?? r.vehicleModel ??
             r.VehicleModel ?? "").trim();
-          const cap = Number(r.passengerCapacity ?? r.PassengerCapacity ?? r.capacity ??
-            r.Capacity ?? r.seats ?? r.Seats ?? r.maxPassengers ?? 0);
+          const cap = Number(r.seatCapacity ?? r.SeatCapacity ?? r.passengerCapacity ?? r.PassengerCapacity ??
+            r.seats ?? r.Seats ?? r.capacity ?? r.Capacity ?? r.maxPassengers ?? 0);
           const wheelCap = Number(r.wheelchairCapacity ?? r.WheelchairCapacity ?? r.wheelchair ??
             r.Wheelchair ?? r.hoist ?? 0);
           const make = String(r.make ?? r.Make ?? r.manufacturer ?? "").trim();
@@ -215,6 +230,7 @@ export function CompaniesProvider({ children }: { children: React.ReactNode }) {
 
         if (hasVehicleFields) {
           // Direct record: vehicles/{pushId} = vehicle data
+          if (!fleetVehicleActive(rec)) continue;
           const { vNum, cls, cap, wheelCap, make, model } = extractVehicleFields(rec);
           const coId = String(rec.companyId ?? rec.companyID ?? rec.CompanyId ?? rec.company_id ?? "").trim();
           registerVehicle(coId, vNum, cls, cap, wheelCap, make, model);
@@ -224,9 +240,10 @@ export function CompaniesProvider({ children }: { children: React.ReactNode }) {
           for (const [innerKey, innerVal] of Object.entries(rec)) {
             if (!innerVal || typeof innerVal !== "object") continue;
             const iv = innerVal as Record<string, unknown>;
+            if (!fleetVehicleActive(iv)) continue;
             const { vNum, cls, cap, wheelCap, make, model } = extractVehicleFields({
               ...iv,
-              vehicleNumber: iv.vehicleNumber ?? iv.vehiclenumber ?? innerKey,
+              vehicleNumber: iv.vehicleNumber ?? iv.vehiclenumber ?? iv.taxiNumber ?? iv.vehicleNo ?? innerKey,
             });
             registerVehicle(coId, vNum, cls, cap, wheelCap, make, model);
           }
@@ -530,10 +547,19 @@ export function CompaniesProvider({ children }: { children: React.ReactNode }) {
           isScheduled: false,
         });
 
+        const fromCaps = companyVehicleCaps.get(id);
+        const vehicleCapacities: Partial<Record<VehicleType, number>> | undefined = (() => {
+          if (!fromCaps || fromCaps.size === 0) return undefined;
+          const out: Partial<Record<VehicleType, number>> = {};
+          for (const [vt, n] of fromCaps) out[vt] = n;
+          return out;
+        })();
+
         live.push({
           id,
           name,
           vehicles: vehicleTypes,
+          vehicleCapacities,
           vehicleTariffs: Object.keys(vehicleTariffs).length > 0 ? vehicleTariffs : undefined,
           rating: (data.rating != null || data.averageRating != null)
             ? Number(data.rating ?? data.averageRating)
@@ -566,11 +592,21 @@ export function CompaniesProvider({ children }: { children: React.ReactNode }) {
 
       // Build "Any Available" from the union of all real company vehicles — not hardcoded
       const allRealVehicles = new Set<VehicleType>();
-      for (const c of live) c.vehicles.forEach((v) => allRealVehicles.add(v));
+      const anyCaps: Partial<Record<VehicleType, number>> = {};
+      for (const c of live) {
+        c.vehicles.forEach((v) => allRealVehicles.add(v));
+        if (!c.vehicleCapacities) continue;
+        for (const [vt, n] of Object.entries(c.vehicleCapacities) as [VehicleType, number][]) {
+          if (typeof n === "number" && n > 0) {
+            anyCaps[vt] = Math.max(anyCaps[vt] ?? 0, n);
+          }
+        }
+      }
       const anyAsap = live.some((c) => c.asapBookable !== false);
       const dynamicAny: Company = {
         ...ANY_COMPANY,
         vehicles: allRealVehicles.size > 0 ? Array.from(allRealVehicles) : ["Sedan"],
+        vehicleCapacities: Object.keys(anyCaps).length > 0 ? anyCaps : undefined,
         asapBookable: anyAsap,
         dispatchOnline: live.some((c) => c.dispatchOnline),
       };
